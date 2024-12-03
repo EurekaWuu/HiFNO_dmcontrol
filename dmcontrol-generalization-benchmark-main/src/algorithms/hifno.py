@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import utils
 
 from algorithms.sac import Actor, Critic, gaussian_logprob, weight_init
-from HiFNO import HierarchicalFNO, PositionalEncoding, MultiScaleConv, PatchExtractor, Mlp, ConvResFourierLayer, SelfAttention, CrossAttentionBlock, TimeAggregator
+from algorithms.models.HiFNO import HierarchicalFNO, PositionalEncoding, MultiScaleConv, PatchExtractor, Mlp, ConvResFourierLayer, SelfAttention, CrossAttentionBlock, TimeAggregator
 
 class HiFNOEncoder(nn.Module):
     """将HiFNO封装为编码器"""
