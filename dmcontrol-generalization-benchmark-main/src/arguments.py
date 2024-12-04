@@ -71,7 +71,6 @@ def parse_args():
 	parser.add_argument('--save_video', default=False, action='store_true')
 
 	# HiFNO specific parameters
-	parser.add_argument('--hidden_dim', default=256, type=int)
 	parser.add_argument('--lr', default=1e-3, type=float)
 	parser.add_argument('--critic_target_tau', default=0.01, type=float)
 	parser.add_argument('--num_scales', default=3, type=int)
@@ -81,7 +80,7 @@ def parse_args():
 
 	args = parser.parse_args()
 
-	assert args.algorithm in {'sac', 'rad', 'curl', 'pad', 'soda', 'drq', 'svea'}, f'specified algorithm "{args.algorithm}" is not supported'
+	assert args.algorithm in {'sac', 'rad', 'curl', 'pad', 'soda', 'drq', 'svea', 'hifno'}, f'specified algorithm "{args.algorithm}" is not supported'
 
 	assert args.eval_mode in {'train', 'color_easy', 'color_hard', 'video_easy', 'video_hard', 'distracting_cs', 'none'}, f'specified mode "{args.eval_mode}" is not supported'
 	assert args.seed is not None, 'must provide seed for experiment'

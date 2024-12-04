@@ -9,6 +9,7 @@ from env.wrappers import make_env
 from algorithms.factory import make_agent
 from logger import Logger
 from video import VideoRecorder
+from datetime import datetime
 
 
 def evaluate(env, agent, video, num_episodes, L, step, test_env=False):
@@ -61,14 +62,14 @@ def main(args):
 	) if args.eval_mode is not None else None
 
 	# Create working directory
-	work_dir = os.path.join(args.log_dir, args.domain_name+'_'+args.task_name, args.algorithm, str(args.seed))
+	timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+	work_dir = os.path.join(args.log_dir, args.domain_name+'_'+args.task_name, 
+						   args.algorithm, str(args.seed), timestamp)
 	print('Working directory:', work_dir)
-	assert not os.path.exists(os.path.join(work_dir, 'train.log')), 'specified working directory already exists'
 	utils.make_dir(work_dir)
 	model_dir = utils.make_dir(os.path.join(work_dir, 'model'))
 	video_dir = utils.make_dir(os.path.join(work_dir, 'video'))
-	video = VideoRecorder(video_dir if args.save_video else None, height=448, width=448)
-	utils.write_info(args, os.path.join(work_dir, 'info.log'))
+	video = VideoRecorder(video_dir if args.save_video else None)
 
 	# Prepare agent
 	assert torch.cuda.is_available(), 'must have cuda enabled'
@@ -148,3 +149,6 @@ def main(args):
 if __name__ == '__main__':
 	args = parse_args()
 	main(args)
+
+
+#CUDA_VISIBLE_DEVICES=3 python train.py --algorithm hifno --hidden_dim 128 --domain_name walker --task_name walk --seed 1 --lr 1e-4 --embed_dim 256 --batch_size 32
