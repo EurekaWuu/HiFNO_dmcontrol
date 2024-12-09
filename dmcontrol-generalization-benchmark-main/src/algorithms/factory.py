@@ -6,6 +6,7 @@ from algorithms.soda import SODA
 from algorithms.drq import DrQ
 from algorithms.svea import SVEA
 from algorithms.hifno import HiFNOAgent
+from algorithms.svea_vis import SVEA_VIS
 
 algorithm = {
 	'sac': SAC,
@@ -14,7 +15,9 @@ algorithm = {
 	'pad': PAD,
 	'soda': SODA,
 	'drq': DrQ,
-	'svea': SVEA
+	'svea': SVEA,
+	'hifno': HiFNOAgent,
+    'svea_vis': SVEA_VIS
 }
 
 
