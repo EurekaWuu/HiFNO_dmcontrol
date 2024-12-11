@@ -6,7 +6,7 @@ from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 
 
-# 定义激活函数
+
 ACTIVATION = {
     'gelu': nn.GELU(),
     'relu': nn.ReLU(),
@@ -14,7 +14,7 @@ ACTIVATION = {
     'silu': nn.SiLU()
 }
 
-# 位置编码模块
+
 class PositionalEncoding:
     @staticmethod
     def generate_1d_encoding(embed_dim, positions):
@@ -41,7 +41,7 @@ class PositionalEncoding:
         mesh = torch.meshgrid(*grids, indexing="ij")  # 创建网格
         flat_mesh = torch.stack([g.reshape(-1) for g in mesh], dim=0)  # (D, prod(grid_shape))
 
-        # 对每个维度进行位置编码，并沿最后一维拼接
+        # 每个维度进行位置编码，沿最后一维拼接
         encodings = [
             PositionalEncoding.generate_1d_encoding(dim_per_axis, flat_mesh[dim])
             for dim in range(len(grid_shape))
@@ -66,7 +66,7 @@ class MultiScaleConv(nn.Module):
         self.stride = stride
         self.device = torch.device('cuda')
 
-        # 初始化卷积层列表
+        
         self.conv_layers = nn.ModuleList()
 
         for rate in dilation_rates:
@@ -101,7 +101,6 @@ class MultiScaleConv(nn.Module):
         return torch.cat(outputs, dim=1)
 
     def _to_tuple(self, value):
-        # 将输入转换为元组，以适应任意维度
         if isinstance(value, int):
             return (value,) * (len(self.kernel_size) if hasattr(self.kernel_size, '__len__') else 1)
         return value
@@ -125,7 +124,7 @@ class PatchExtractor(nn.Module):
         self.dilation_rates = dilation_rates
         self.activation_name = activation
         self.activation = self.get_activation(activation)
-        self.projection = None  # 将在 forward 中初始化
+        self.projection = None  
 
     def get_activation(self, activation):
         activation_map = {
@@ -149,7 +148,7 @@ class PatchExtractor(nn.Module):
         else:
             patch_size = self.patch_size
 
-        # 根据维度选择合适的卷积层
+        
         Conv = getattr(nn, f'Conv{dims_num}d')
 
         if self.projection is None:
@@ -169,7 +168,7 @@ class PatchExtractor(nn.Module):
                     kernel_size=1,
                     stride=1
                 )
-            ).to(self.device)  # 将整个Sequential移动到GPU
+            ).to(self.device)  
 
         patches = self.projection(x)
         return patches
@@ -224,7 +223,7 @@ class ConvResFourierLayer(nn.Module):
         self.conv = None
 
     def forward(self, x):
-        # 确保输入在正确的设备上
+        
         x = x.to(self.device)
         
         if self.dims is None:
@@ -267,12 +266,12 @@ class ConvResFourierLayer(nn.Module):
         # 对输入通道维度求和
         out_fft = torch.einsum('bcxy,bkcxy->bkxy', x_fft, kernel_fft)
 
-        # 反傅里叶变换
+        
         # [B, C_out, T, T] -> [B, C_out, H, W]
         out = torch.fft.ifftn(out_fft, s=x.shape[2:], dim=tuple(range(2, out_fft.dim())))
         out = out.real
 
-        # 合并两个分支
+        
         return out + conv_out + self.bias
 
     def to(self, device):
@@ -306,23 +305,20 @@ class SelfAttention(nn.Module):
         self.mlp_dropout = nn.Dropout(dropout_rate)
 
     def forward(self, x):
-        """
-        x: (B, N, D) 输入张量
-        返回: (B, N, D) 输出张量
-        """
+
         # 多头注意力
         x_residual = x
-        x = self.norm1(x)  # 层归一化
+        x = self.norm1(x)  
         x, _ = self.attention(x, x, x)  # (B, N, D)
-        x = self.attention_dropout(x)  # Dropout 后的注意力输出
-        x = x + x_residual  # 残差连接
+        x = self.attention_dropout(x)  
+        x = x + x_residual  
 
         # MLP
         y_residual = x
-        x = self.norm2(x)  # 层归一化
+        x = self.norm2(x)  
         x = self.mlp(x)  # (B, N, D)
-        x = self.mlp_dropout(x)  # Dropout 后的 MLP 输出
-        x = x + y_residual  # 残差连接
+        x = self.mlp_dropout(x)  
+        x = x + y_residual  
 
         return x
 
@@ -349,16 +345,10 @@ class CrossAttentionBlock(nn.Module):
         )
 
     def forward(self, latents, x):
-        """
-        latents(torch.Tensor)隐变量，形状为(B, S, T', D)
-        x(torch.Tensor)输入特征，形状为(B, S, T, D)
-
-        返回更新后的隐变量，形状为(B, S, T', D)
-        """
         B, S, T_prime, D = latents.shape
         _, _, T, _ = x.shape
 
-        # 调整维度以匹配 MultiheadAttention 的输入要求
+        
         latents_flat = rearrange(latents, "b s t d -> (b s) t d")  # (B*S, T', D)
         x_flat = rearrange(x, "b s t d -> (b s) t d")  # (B*S, T, D)
 
@@ -367,18 +357,18 @@ class CrossAttentionBlock(nn.Module):
             self.norm1(latents_flat), self.norm1(x_flat), self.norm1(x_flat)
         )[0]  # (B*S, T', D)
 
-        # 残差连接
+        
         latents_flat = latents_flat + latents_attn
 
-        # MLP 层
+        
         latents_flat = latents_flat + self.mlp(self.norm2(latents_flat))
 
-        # 恢复形状
+        
         latents = rearrange(latents_flat, "(b s) t d -> b s t d", b=B, s=S)
         return latents
 
 
-        # 时间聚合模块
+        
 class TimeAggregator(nn.Module):
     def __init__(self, embed_dim, depth, num_heads=8, num_latents=64, mlp_ratio=1, layer_norm_eps=1e-5):
         super().__init__()
@@ -389,16 +379,16 @@ class TimeAggregator(nn.Module):
         self.mlp_ratio = mlp_ratio
         self.layer_norm_eps = layer_norm_eps
 
-        # 初始化可学习的时间隐变量
+        
         self.latents = nn.Parameter(torch.randn(num_latents, embed_dim))
 
-        # Transformer 层
+        
         self.cross_attn_blocks = nn.ModuleList([
             CrossAttentionBlock(embed_dim, num_heads, mlp_ratio, layer_norm_eps)
             for _ in range(depth)
         ])
 
-        # 维度调整层将在需要时动态创建
+        
         self.dim_adjust = None
 
     def _create_dim_adjust(self, in_dim, device):
@@ -409,18 +399,13 @@ class TimeAggregator(nn.Module):
             nn.ReLU()
         ).to(device)
 
-    def forward(self, x):
-        """
-        参数x(torch.Tensor)输入张量，形状为(B, T, *S_dims, D)或(B, *S_dims, D)
-        返回torch.Tensor输出张量，形状为(B, T', *S_dims, D)。
-        """
-        # 保存原始形状
+    def forward(self, x):     
         orig_shape = x.shape
         B = orig_shape[0]
         D = orig_shape[-1]
         spatial_dims = orig_shape[1:-1]  # 获取所有中间维度
 
-        # 展平所有空间维度
+        
         S = np.prod(spatial_dims) if spatial_dims else 1
         x = x.view(B, -1, D)  # (B, S, D)
         
@@ -437,10 +422,10 @@ class TimeAggregator(nn.Module):
         # 初始化隐变量，扩展为每个批次和空间维度
         latents = repeat(self.latents, "t d -> b s t d", b=B, s=S)
 
-        # 调整输入形状为 (B, S, T, D)
+        
         x = rearrange(x, "b t s d -> b s t d")
 
-        # Transformer 层聚合
+        
         for block in self.cross_attn_blocks:
             latents = block(latents, x)
 
@@ -469,12 +454,6 @@ def F_avg_pool_nd(x, kernel_size):
 
 
 def generate_rearrange_pattern(spatial_shape, flatten=False):
-    """
-    根据输入的空间维度生成动态的rearrange模式。
-    :param spatial_shape: 空间维度列表 (D1, D2, ..., Dn)
-    :param flatten: 是否展平空间维度
-    :return: rearrange模式字符串
-    """
     dims = ' '.join([f'd{i}' for i in range(len(spatial_shape))])
     if flatten:
         # 从 (B, C, D1, D2, ..., Dn) 到 (B, N, C)
@@ -510,7 +489,7 @@ class HierarchicalFNO(nn.Module):
         # 空间维度数量
         self.spatial_dims = len(img_size)
 
-        # Patch提取器
+        
         self.patch_extractor = PatchExtractor(
             patch_size=patch_size,
             input_channels=in_channels,
@@ -538,7 +517,7 @@ class HierarchicalFNO(nn.Module):
             ])
             self.conv_res_fourier_layers.append(layer)
 
-        # 自注意力层
+        
         self.self_attention_layers = nn.ModuleList([
             SelfAttention(
                 num_heads=num_heads,
@@ -550,7 +529,7 @@ class HierarchicalFNO(nn.Module):
             for _ in range(num_scales)
         ])
 
-        # 输出MLP层
+        
         self.mlp_head = Mlp(
             input_dim=embed_dim,
             hidden_dim=int(embed_dim * mlp_ratio),
@@ -563,19 +542,19 @@ class HierarchicalFNO(nn.Module):
         spatial_dims = len(spatial_shape)
         assert spatial_dims == self.spatial_dims, f"输入的空间维度数量应为 {self.spatial_dims}，但得到的是 {spatial_dims}"
 
-        # Patch提取
+        
         x = self.patch_extractor(x)  # (B, embed_dim, *new_spatial_shape)
         new_spatial_shape = x.shape[2:]  # 更新后的空间维度
         base_shape = new_spatial_shape  # 保存基准形状
 
-        # 生成位置编码
+        
         pos_encoding = PositionalEncoding.generate_nd_encoding(self.embed_dim, new_spatial_shape)  # (1, prod(new_spatial_shape), embed_dim)
         pos_encoding = pos_encoding.to(x.device)
 
-        # 调整维度顺序并添加位置编码
+        
         x = rearrange(x, 'b c ... -> b ... c')  # (B, *new_spatial_shape, embed_dim)
         pos_encoding = pos_encoding.view(1, *new_spatial_shape, -1)  # (1, *new_spatial_shape, embed_dim)
-        x = x + pos_encoding  # 广播机制会自动处理batch维度
+        x = x + pos_encoding  
         x = rearrange(x, 'b ... c -> b c ...')  # (B, embed_dim, *new_spatial_shape)
 
         # 分层处理
@@ -586,16 +565,16 @@ class HierarchicalFNO(nn.Module):
             if scale_idx > 0:
                 scale_x = F_avg_pool_nd(scale_x, kernel_size=2)
 
-            # 通过卷积-残差傅里叶层
+            
             for layer in self.conv_res_fourier_layers[scale_idx]:
                 scale_x = layer(scale_x)
 
-            # 自注意力层
+            
             current_shape = scale_x.shape[2:]  # 保存当前空间维度
-            # 展平空间维度
+            
             scale_x = rearrange(scale_x, 'b c ... -> b (...) c')  # (B, N, C)
             scale_x = self.self_attention_layers[scale_idx](scale_x)  # (B, N, C)
-            # 恢复空间维度
+            
             scale_x = rearrange(scale_x, f'b ({" ".join(f"d{i}" for i in range(len(current_shape)))}) c -> b c {" ".join(f"d{i}" for i in range(len(current_shape)))}', **{f'd{i}': current_shape[i] for i in range(len(current_shape))})
 
             # 上采样到基准大小
@@ -604,10 +583,10 @@ class HierarchicalFNO(nn.Module):
             
             outputs.append(scale_x)
 
-        # 合并不同尺度的输出
+        
         x = torch.stack(outputs, dim=0).sum(dim=0)
 
-        # 最后的MLP层
+        
         x = rearrange(x, 'b c ... -> b (...) c')  # (B, N, C)
         x = self.mlp_head(x)
         
@@ -637,12 +616,12 @@ class HierarchicalFNO(nn.Module):
 
 
 
-# 示例用法
+
 if __name__ == "__main__":
-    # 创建随机输入张量，例如3D数据
+    
     x = torch.randn(2, 1, 32, 32, 32)  # (B, C, D, H, W)
 
-    # 实例化模型，指定输入维度
+    
     model = HierarchicalFNO(
         img_size=(32, 32, 32),
         patch_size=4,
