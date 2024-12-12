@@ -67,6 +67,7 @@ def main(args):
 						   args.algorithm, str(args.seed), timestamp)
 	print('Working directory:', work_dir)
 	utils.make_dir(work_dir)
+	utils.write_info(args, os.path.join(work_dir, 'info.log'))
 	model_dir = utils.make_dir(os.path.join(work_dir, 'model'))
 	video_dir = utils.make_dir(os.path.join(work_dir, 'video'))
 	video = VideoRecorder(video_dir if args.save_video else None)
