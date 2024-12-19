@@ -19,15 +19,21 @@ algorithm = {
 	'drq': DrQ,
 	'svea': SVEA,
 	'hifno': HiFNOAgent,
+	'hifno_multigpu': HiFNOAgentMultiGPU,
     'svea_vis': SVEA_VIS
 }
 
 
 def make_agent(obs_shape, action_shape, args):
-	if args.algorithm == 'hifno':
-		if torch.cuda.device_count() > 1:
-			return HiFNOAgentMultiGPU(obs_shape, action_shape, args)
-		else:
-			return HiFNOAgent(obs_shape, action_shape, args)
-	else:
-		raise NotImplementedError
+	if args.algorithm in ['hifno', 'hifno_multigpu']:
+		# 根据算法名称选择对应的实现
+		agent_class = algorithm[args.algorithm]
+		agent = agent_class(
+			obs_shape=obs_shape,
+			action_shape=action_shape,
+			args=args
+		)
+		agent = agent.to(torch.device('cuda:0'))
+		return agent
+	# 对于其他算法
+	return algorithm[args.algorithm](obs_shape, action_shape, args)
