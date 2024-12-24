@@ -152,4 +152,4 @@ if __name__ == '__main__':
 	main(args)
 
 
-#CUDA_VISIBLE_DEVICES=3 python train.py --algorithm hifno --hidden_dim 128 --domain_name walker --task_name walk --seed 1 --lr 1e-4 --embed_dim 256 --batch_size 32
+#CUDA_VISIBLE_DEVICES=3 python train_hifno.py --algorithm hifno --hidden_dim 128 --domain_name walker --task_name walk --seed 1 --lr 1e-4 --embed_dim 256 --batch_size 32

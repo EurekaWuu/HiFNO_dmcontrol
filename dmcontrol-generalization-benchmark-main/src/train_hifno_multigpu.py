@@ -1,17 +1,39 @@
-import torch
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = '0,2,4'
+
+import torch
+import torch.nn as nn
 import numpy as np
 import gym
 import utils
 import time
 from arguments import parse_args
 from env.wrappers import make_env
-from algorithms.factory import make_agent
+from algorithms.factory_multigpu import make_agent
 from logger import Logger
 from video import VideoRecorder
 from datetime import datetime
 from algorithms.hifno_multigpu import HiFNOAgent
-os.environ["CUDA_VISIBLE_DEVICES"] = '0,1,2,3,4,5,6,7'
+from torch import nn
+
+
+def safe_sample_action(agent, obs):
+	
+	if isinstance(agent, nn.DataParallel):
+		return agent.module.sample_action(obs)
+	else:
+		# 如果不是 DataParallel，先包装成 DataParallel
+		agent = nn.DataParallel(agent)
+		return agent.module.sample_action(obs)
+
+def safe_select_action(agent, obs):
+	
+	if isinstance(agent, nn.DataParallel):
+		return agent.module.select_action(obs)
+	else:
+		# 如果不是 DataParallel，先包装成 DataParallel
+		agent = nn.DataParallel(agent)
+		return agent.module.select_action(obs)
 
 
 def evaluate(env, agent, video, num_episodes, L, step, test_env=False):
@@ -23,10 +45,20 @@ def evaluate(env, agent, video, num_episodes, L, step, test_env=False):
 		episode_reward = 0
 		while not done:
 			with utils.eval_mode(agent):
-				action = agent.select_action(obs)
-			obs, reward, done, _ = env.step(action)
-			video.record(env)
-			episode_reward += reward
+				if not isinstance(obs, np.ndarray):
+					obs = np.array(obs)
+				
+				if len(obs.shape) == 3:
+					obs = obs.reshape(1, *obs.shape)
+				elif len(obs.shape) == 2:
+					obs = obs.reshape(1, 1, *obs.shape)
+				
+				obs = torch.from_numpy(obs).float().cuda()
+
+				action = agent.module.select_action(obs)
+				obs, reward, done, _ = env.step(action)
+				video.record(env)
+				episode_reward += reward
 
 		if L is not None:
 			_test_env = '_test_env' if test_env else ''
@@ -94,36 +126,13 @@ def main(args):
 	)
 	print(f"Agent type: {type(agent).__module__}.{type(agent).__name__}")
 
-	# 将agent移到GPU并启用多GPU，设置为DataParallel
-	if torch.cuda.device_count() > 1:
-		print(f"Using {torch.cuda.device_count()} GPUs!")
-		
-		# 修改这里：先将模型移到cuda
-		agent.encoder = agent.encoder.cuda()
-		agent.actor = agent.actor.cuda()
-		agent.critic = agent.critic.cuda()
-		agent.critic_target = agent.critic_target.cuda()
-		
-		# 然后包装为DataParallel
-		agent.encoder = torch.nn.DataParallel(
-			agent.encoder,
-			device_ids=list(range(torch.cuda.device_count()))
-		)
-		
-		agent.actor = torch.nn.DataParallel(
-			agent.actor,
-			device_ids=list(range(torch.cuda.device_count()))
-		)
-		
-		agent.critic = torch.nn.DataParallel(
-			agent.critic,
-			device_ids=list(range(torch.cuda.device_count()))
-		)
-		
-		agent.critic_target = torch.nn.DataParallel(
-			agent.critic_target,
-			device_ids=list(range(torch.cuda.device_count()))
-		)
+	
+	device = torch.device('cuda')
+	agent = agent.to(device)
+
+	# 无论单卡还是多卡都包装成 DataParallel
+	print(f"Using {torch.cuda.device_count()} GPU(s)!")
+	agent = nn.DataParallel(agent)
 
 	start_step, episode, episode_reward, done = 0, 0, 0, True
 	L = Logger(work_dir)
@@ -148,24 +157,21 @@ def main(args):
 
 			# Save agent periodically
 			if step > start_step and step % args.save_freq == 0:
-				# 保存模型时需要特别处理DataParallel
+				
 				if isinstance(agent.encoder, torch.nn.DataParallel):
 					encoder_state = agent.encoder.module.state_dict()
 					actor_state = agent.actor.module.state_dict()
 					critic_state = agent.critic.module.state_dict()
-					critic_target_state = agent.critic_target.module.state_dict()
 				else:
 					encoder_state = agent.encoder.state_dict()
 					actor_state = agent.actor.state_dict() 
 					critic_state = agent.critic.state_dict()
-					critic_target_state = agent.critic_target.state_dict()
 
 				torch.save(
 					{
 						'encoder': encoder_state,
 						'actor': actor_state,
-						'critic': critic_state,
-						'critic_target': critic_target_state
+						'critic': critic_state
 					},
 					os.path.join(model_dir, f'{step}.pt')
 				)
@@ -182,21 +188,53 @@ def main(args):
 
 		# Sample action for data collection
 		if step < args.init_steps:
-			action = env.action_space.sample()
+			# 处理 LazyFrames
+			if not isinstance(obs, np.ndarray):
+				obs = np.array(obs)
+			
+			if len(obs.shape) == 3:  # (C, H, W)
+				obs = obs.reshape(1, *obs.shape)
+			elif len(obs.shape) == 2:  # (H, W)
+				obs = obs.reshape(1, 1, *obs.shape)
+			
+			obs_tensor = torch.FloatTensor(obs).cuda()
+			action = agent.module.sample_action(obs_tensor)
 		else:
 			with utils.eval_mode(agent):
-				action = agent.sample_action(obs)
+				# 处理 LazyFrames
+				if not isinstance(obs, np.ndarray):
+					obs = np.array(obs)
+				
+				if len(obs.shape) == 3:  # (C, H, W)
+					obs = obs.reshape(1, *obs.shape)
+				elif len(obs.shape) == 2:  # (H, W)
+					obs = obs.reshape(1, 1, *obs.shape)
+				
+				obs_tensor = torch.FloatTensor(obs).cuda()
+				action = agent.module.sample_action(obs_tensor)
 
 		# Run training update
 		if step >= args.init_steps:
 			num_updates = args.init_steps if step == args.init_steps else 1
 			for _ in range(num_updates):
-				agent.update(replay_buffer, L, step)
+				agent.module.update(replay_buffer, L, step)
 
 		# Take step
 		next_obs, reward, done, _ = env.step(action)
 		done_bool = 0 if episode_step + 1 == env._max_episode_steps else float(done)
-		replay_buffer.add(obs, action, reward, next_obs, done_bool)
+		
+		# 处理 LazyFrames 用于存储
+		if not isinstance(obs, np.ndarray):
+			obs_array = np.array(obs)
+		else:
+			obs_array = obs
+			
+		if not isinstance(next_obs, np.ndarray):
+			next_obs_array = np.array(next_obs)
+		else:
+			next_obs_array = next_obs
+			
+		replay_buffer.add(obs_array, action, reward, next_obs_array, done_bool)
 		episode_reward += reward
 		obs = next_obs
 
@@ -210,4 +248,4 @@ if __name__ == '__main__':
 	main(args)
 
 
-#CUDA_VISIBLE_DEVICES=3 python train.py --algorithm hifno --hidden_dim 128 --domain_name walker --task_name walk --seed 1 --lr 1e-4 --embed_dim 256 --batch_size 32
+# python train_hifno_multigpu.py --algorithm hifno_multigpu --hidden_dim 128 --domain_name walker --task_name walk --seed 1 --lr 1e-4 --embed_dim 256 --batch_size 32
