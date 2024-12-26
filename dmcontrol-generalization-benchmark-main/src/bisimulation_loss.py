@@ -32,17 +32,14 @@ class BisimulationLoss(nn.Module):
         - HiFNOEncoder：在HierarchicalFNO输出的基础上进一步通过聚合和映射，将多维特征压缩至 (B, hidden_dim)
           的固定维度表示，用于下游策略网络或表示学习任务。
         """
-        super(BisimulationLoss, self).__init__()
+        super().__init__()
         self.lambda_BB = lambda_BB
         self.lambda_ICC = lambda_ICC
         self.lambda_CC = lambda_CC
         self.p = p
         self.check_inputs = check_inputs
 
-    def forward(self,
-                phi_si_theta1,  phi_sj_theta1,
-                phi_si_theta2, phi_sj_theta2,
-                d_sij):
+    def forward(self, phi_si_theta1, phi_sj_theta1, phi_si_theta2, phi_sj_theta2, d_sij):
         """
         计算双模拟损失并返回 total_loss 及各项子损失。
 
@@ -69,30 +66,27 @@ class BisimulationLoss(nn.Module):
         # 可选检查输入是否符合预期形状和批大小
         if self.check_inputs:
             batch_size = phi_si_theta1.size(0)
-            assert phi_si_theta1.dim() == 2 and  phi_sj_theta1.dim() == 2 \
+            assert phi_si_theta1.dim() == 2 and phi_sj_theta1.dim() == 2 \
                    and phi_si_theta2.dim() == 2 and phi_sj_theta2.dim() == 2, \
                    "phi_*_theta* 输入必须为二维张量[B, rep_dim]"
             assert d_sij.dim() == 1 and d_sij.size(0) == batch_size, \
                    "d_sij必须为[B]的一维张量，并与表示张量的batch维度匹配"
-            assert  phi_sj_theta1.size(0) == batch_size \
+            assert phi_sj_theta1.size(0) == batch_size \
                    and phi_si_theta2.size(0) == batch_size \
                    and phi_sj_theta2.size(0) == batch_size, \
                    "所有表示张量的batch维度必须一致"
 
-        def dist_fn(x, y, p=self.p):
-            return torch.norm(x - y, p=p, dim=-1)
-
-        # 基础双模拟 (BB)
-        d_y_theta1 = dist_fn(phi_s_i_theta1,  phi_sj_theta1)
-        L_BB = F.mse_loss(d_y_theta1, d_sij)
-
-        # 上下文内一致性 (ICC)
-        d_y_icc = dist_fn(phi_s_i_theta1, phi_si_theta2)
-        L_ICC = d_y_icc.mean()
-
-        # 跨上下文一致性 (CC)
+        # 计算表示空间中的距离
+        dist_fn = lambda x, y: torch.norm(x - y, p=self.p, dim=1)
+        d_y_theta1 = dist_fn(phi_si_theta1, phi_sj_theta1)
         d_y_theta2 = dist_fn(phi_si_theta2, phi_sj_theta2)
-        L_CC = F.l1_loss(d_y_theta1, d_y_theta2)
 
+        # 计算三个损失项
+        L_BB = F.mse_loss(d_y_theta1, d_sij)  # Base Bisimulation Loss
+        L_ICC = F.mse_loss(phi_si_theta1, phi_si_theta2)  # Inter-context Consistency Loss
+        L_CC = F.mse_loss(d_y_theta1, d_y_theta2)  # Cross Consistency Loss
+
+        # 合并损失
         total_loss = self.lambda_BB * L_BB + self.lambda_ICC * L_ICC + self.lambda_CC * L_CC
+
         return total_loss, (L_BB, L_ICC, L_CC)

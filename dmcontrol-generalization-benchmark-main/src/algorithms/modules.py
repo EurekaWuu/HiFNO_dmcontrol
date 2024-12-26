@@ -297,3 +297,67 @@ class SODAPredictor(nn.Module):
 
 	def forward(self, x):
 		return self.mlp(self.encoder(x))
+
+
+class BisimCritic(nn.Module):
+	"""支持双模拟的Critic网络"""
+	def __init__(self, encoder, action_shape, hidden_dim):
+		super().__init__()
+		self.encoder = encoder
+		self.Q1 = QFunction(
+			self.encoder.out_dim, action_shape[0], hidden_dim
+		)
+		self.Q2 = QFunction(
+			self.encoder.out_dim, action_shape[0], hidden_dim
+		)
+		
+	def forward(self, x, action, detach=False):
+		x = self.encoder(x, detach)
+		return self.Q1(x, action), self.Q2(x, action)
+	
+	def get_state_rep(self, x, detach=False):
+		"""获取状态表示，用于计算双模拟损失"""
+		return self.encoder(x, detach)
+
+
+class BisimActor(nn.Module):
+	"""支持双模拟的Actor网络"""
+	def __init__(self, encoder, action_shape, hidden_dim, log_std_min, log_std_max):
+		super().__init__()
+		self.encoder = encoder
+		self.log_std_min = log_std_min
+		self.log_std_max = log_std_max
+		self.mlp = nn.Sequential(
+			nn.Linear(self.encoder.out_dim, hidden_dim), nn.ReLU(),
+			nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
+			nn.Linear(hidden_dim, 2 * action_shape[0])
+		)
+		self.mlp.apply(weight_init)
+
+	def forward(self, x, compute_pi=True, compute_log_pi=True, detach=False):
+		x = self.encoder(x, detach)
+		mu, log_std = self.mlp(x).chunk(2, dim=-1)
+		log_std = torch.tanh(log_std)
+		log_std = self.log_std_min + 0.5 * (
+			self.log_std_max - self.log_std_min
+		) * (log_std + 1)
+
+		if compute_pi:
+			std = log_std.exp()
+			noise = torch.randn_like(mu)
+			pi = mu + noise * std
+		else:
+			pi = None
+			noise = None
+
+		if compute_log_pi:
+			log_pi = gaussian_logprob(noise, log_std)
+		else:
+			log_pi = None
+
+		mu, pi, log_pi = squash(mu, pi, log_pi)
+		return mu, pi, log_pi, log_std
+
+	def get_state_rep(self, x, detach=False):
+		"""获取状态表示，用于计算双模拟损失"""
+		return self.encoder(x, detach)

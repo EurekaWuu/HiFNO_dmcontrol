@@ -74,12 +74,20 @@ def main(args):
 
 	# Prepare agent
 	assert torch.cuda.is_available(), 'must have cuda enabled'
-	replay_buffer = utils.ReplayBuffer(
-		obs_shape=env.observation_space.shape,
-		action_shape=env.action_space.shape,
-		capacity=args.train_steps,
-		batch_size=args.batch_size
-	)
+	if args.algorithm == 'hifno_bisim':
+		replay_buffer = utils.BisimReplayBuffer(
+			obs_shape=env.observation_space.shape,
+			action_shape=env.action_space.shape,
+			capacity=args.train_steps,
+			batch_size=args.batch_size * 2
+		)
+	else:
+		replay_buffer = utils.ReplayBuffer(
+			obs_shape=env.observation_space.shape,
+			action_shape=env.action_space.shape,
+			capacity=args.train_steps,
+			batch_size=args.batch_size
+		)
 	cropped_obs_shape = (3*args.frame_stack, args.image_crop_size, args.image_crop_size)
 	print('Observations:', env.observation_space.shape)
 	print('Cropped observations:', cropped_obs_shape)
@@ -133,7 +141,12 @@ def main(args):
 		if step >= args.init_steps:
 			num_updates = args.init_steps if step == args.init_steps else 1
 			for _ in range(num_updates):
-				agent.update(replay_buffer, L, step)
+				update_info = agent.update(replay_buffer, L, step)
+				if args.algorithm == 'hifno_bisim' and L is not None:
+					L.log('train/bisim_loss', update_info.get('bisim_loss', 0), step)
+					L.log('train/L_BB', update_info.get('L_BB', 0), step)
+					L.log('train/L_ICC', update_info.get('L_ICC', 0), step)
+					L.log('train/L_CC', update_info.get('L_CC', 0), step)
 
 		# Take step
 		next_obs, reward, done, _ = env.step(action)
@@ -152,4 +165,8 @@ if __name__ == '__main__':
 	main(args)
 
 
-#CUDA_VISIBLE_DEVICES=3 python train_hifno.py --algorithm hifno --hidden_dim 128 --domain_name walker --task_name walk --seed 1 --lr 1e-4 --embed_dim 256 --batch_size 32
+'''
+CUDA_VISIBLE_DEVICES=3 python train_hifno.py --algorithm hifno --hidden_dim 128 --domain_name walker --task_name walk --seed 1 --lr 1e-4 --embed_dim 256 --batch_size 32
+CUDA_VISIBLE_DEVICES=6 python train_hifno.py --algorithm hifno_bisim --hidden_dim 128 --domain_name walker --task_name walk --seed 1 --lr 1e-4 --embed_dim 256 --batch_size 32
+
+'''

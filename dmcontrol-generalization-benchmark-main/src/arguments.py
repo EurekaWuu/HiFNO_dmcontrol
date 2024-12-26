@@ -78,10 +78,20 @@ def parse_args():
 	parser.add_argument('--depth', default=2, type=int)
 	parser.add_argument('--patch_size', default=4, type=int)
 
+	# 双模拟相关参数
+	parser.add_argument('--lambda_BB', type=float, default=0.8,
+						help='Base Bisimulation loss weight')
+	parser.add_argument('--lambda_ICC', type=float, default=0.4,
+						help='Inter-context Consistency loss weight')
+	parser.add_argument('--lambda_CC', type=float, default=0.4,
+						help='Cross Consistency loss weight')
+	parser.add_argument('--bisim_p', type=int, default=2,
+						help='Norm used in bisimulation distance calculation')
+
 	args = parser.parse_args()
 
 	assert args.algorithm in {
-		'sac', 'rad', 'curl', 'pad', 'soda', 'drq', 'svea', 'hifno', 'hifno_multigpu'
+		'sac', 'rad', 'curl', 'pad', 'soda', 'drq', 'svea', 'hifno', 'hifno_multigpu', 'hifno_bisim'
 	}, f'specified algorithm "{args.algorithm}" is not supported'
 
 	assert args.eval_mode in {'train', 'color_easy', 'color_hard', 'video_easy', 'video_hard', 'distracting_cs', 'none'}, f'specified mode "{args.eval_mode}" is not supported'

@@ -47,7 +47,7 @@ def set_seed_everywhere(seed):
 def write_info(args, fp):
     data = {
         'timestamp': str(datetime.now()),
-        'git': subprocess.check_output(["git", "describe", "--always"]).strip().decode(),
+        # 'git': subprocess.check_output(["git", "describe", "--always"]).strip().decode(),
         'args': vars(args)
     }
     with open(fp, 'w') as f:
@@ -224,3 +224,40 @@ def count_parameters(net, as_int=False):
     if as_int:
         return count
     return f'{count:,}'
+
+
+class BisimReplayBuffer(ReplayBuffer):
+    def __init__(self, obs_shape, action_shape, capacity, batch_size):
+        super().__init__(obs_shape, action_shape, capacity, batch_size)
+        
+    def sample(self):
+        """分批处理数据以减少内存使用"""
+        # 第一批
+        idxs1 = np.random.randint(
+            0, self.capacity if self.full else self.idx, 
+            size=self.batch_size
+        )
+        obs1, next_obs1 = self._encode_obses(idxs1)
+        
+        # 第二批
+        idxs2 = np.random.randint(
+            0, self.capacity if self.full else self.idx, 
+            size=self.batch_size
+        )
+        obs2, next_obs2 = self._encode_obses(idxs2)
+        
+        # 合并数据
+        obs = np.concatenate([obs1, obs2], axis=0)
+        next_obs = np.concatenate([next_obs1, next_obs2], axis=0)
+        
+        # 获取其他数据
+        idxs = np.concatenate([idxs1, idxs2])
+        
+        # 转换为张量
+        obs = torch.as_tensor(obs).cuda().float()
+        next_obs = torch.as_tensor(next_obs).cuda().float()
+        actions = torch.as_tensor(self.actions[idxs]).cuda()
+        rewards = torch.as_tensor(self.rewards[idxs]).cuda()
+        not_dones = torch.as_tensor(self.not_dones[idxs]).cuda()
+        
+        return obs, actions, rewards, next_obs, not_dones
