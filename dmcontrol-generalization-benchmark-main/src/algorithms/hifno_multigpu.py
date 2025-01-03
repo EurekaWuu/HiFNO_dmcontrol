@@ -12,6 +12,7 @@ from algorithms.models.HiFNO_multigpu import HierarchicalFNO, PositionalEncoding
 import os
 import time
 from datetime import datetime
+import torch.distributed as dist
 
 class HiFNOEncoder(nn.Module):
     def __init__(self, obs_shape, feature_dim, args):
@@ -77,16 +78,16 @@ class HiFNOEncoder(nn.Module):
                 raise ValueError(f"Unexpected number of input channels: {C}, expected {expected_channels}")
         
         
-        device = next(self.hifno.parameters()).device
+        device = next(self.parameters()).device
         obs = obs.to(device)
         
         # 特征提取
-        features = self.hifno(obs)                    # (B, feature_dim, H', W')
-        features = features.permute(0, 2, 3, 1)       # (B, H, W, feature_dim)
-        features = features.unsqueeze(1)              # (B, 1, H, W, feature_dim)
-        features = self.time_aggregator(features)     # (B, T', H, W, embed_dim)
-        features = features.mean(dim=(1, 2, 3, 4))    # (B, embed_dim)
-        features = self.feature_map(features)         # (B, hidden_dim)
+        features = self.hifno(obs)
+        features = features.permute(0, 2, 3, 1)
+        features = features.unsqueeze(1)
+        features = self.time_aggregator(features)
+        features = features.mean(dim=(1, 2, 3, 4))
+        features = self.feature_map(features)
         
         if detach:
             features = features.detach()
@@ -162,14 +163,8 @@ class HiFNOAgent(SAC, nn.Module):
 
     def update_critic(self, obs, action, reward, next_obs, not_done, L=None, step=None):
         with torch.no_grad():
-            if isinstance(self.actor, torch.nn.DataParallel):
-                inputs = (next_obs, True, True)
-                _, policy_action, log_pi, _ = self.actor(*inputs)
-                target_Q1, target_Q2 = self.critic_target(next_obs, policy_action)
-            else:
-                _, policy_action, log_pi, _ = self.actor(next_obs)
-                target_Q1, target_Q2 = self.critic_target(next_obs, policy_action)
-            
+            _, policy_action, log_pi, _ = self.actor(next_obs)
+            target_Q1, target_Q2 = self.critic_target(next_obs, policy_action)
             target_V = torch.min(target_Q1, target_Q2) - self.alpha.detach() * log_pi
             target_Q = reward + (not_done * self.args.discount * target_V)
 
@@ -186,7 +181,6 @@ class HiFNOAgent(SAC, nn.Module):
         self.critic_optimizer.step()
 
     def update(self, replay_buffer, L, step):
-        # 从replay buffer获取数据
         obs, action, reward, next_obs, not_done = replay_buffer.sample()
         
         # # 打印原始形状
@@ -206,7 +200,7 @@ class HiFNOAgent(SAC, nn.Module):
         if isinstance(not_done, np.ndarray):
             not_done = torch.FloatTensor(not_done)
 
-        #   检查，只在必要时 permute
+        
         #   如果 obs 已经是 (B,9,H,W)，则不需要 permute
         #   如果 obs.shape = (B,H,W,9)，才做 permute
         if obs.dim() == 4:
@@ -233,33 +227,19 @@ class HiFNOAgent(SAC, nn.Module):
 
     def select_action(self, obs):
         with torch.no_grad():
-            # 如果输入已经是 tensor，需要在正确的设备上
-            if isinstance(obs, torch.Tensor):
-                device = next(self.actor.parameters()).device
-                obs = obs.to(device)
-            else:
-                # 如果不是 tensor，先转换为 numpy 数组
-                if not isinstance(obs, np.ndarray):
-                    obs = np.array(obs)
+            if not isinstance(obs, torch.Tensor):
+                obs = torch.FloatTensor(obs)
 
-                if len(obs.shape) == 3:  # (C, H, W)
-                    obs = obs.reshape(1, *obs.shape)  # 添加 batch 维度
-                elif len(obs.shape) == 2:  # (H, W)
-                    obs = obs.reshape(1, 1, *obs.shape)  # 添加 batch+channel 维度
-
-                # 转换为 tensor 移到正确的设备
-                device = next(self.actor.parameters()).device
-                obs = torch.FloatTensor(obs).to(device)
+            if len(obs.shape) == 3:
+                obs = obs.unsqueeze(0)
+            
+            
+            device = next(self.parameters()).device
+            obs = obs.to(device)
 
             
-            inputs = (obs, False, False)  # (x, compute_pi, compute_log_pi)
-            mu, _, _, _ = self.actor(*inputs)
+            mu, _, _, _ = self.actor(obs)
             
-            # 如果使用了 DataParallel，结果可能在不同 GPU 上，需要收集
-            if isinstance(mu, list):
-                mu = torch.cat(mu, dim=0)
-            
-            # 先将 tensor 移到 CPU，再转换为 numpy
             action = mu.cpu().data.numpy().flatten()
             action = np.clip(action, -1.0, 1.0)
             action = action[:self.action_shape[0]]
@@ -267,48 +247,30 @@ class HiFNOAgent(SAC, nn.Module):
 
     def sample_action(self, obs):
         with torch.no_grad():
-            # 如果输入已经是 tensor，需要在正确的设备上
-            if isinstance(obs, torch.Tensor):
-                device = next(self.actor.parameters()).device
-                obs = obs.to(device)
-            else:
-                # 如果不是 tensor，先转换为 numpy 数组
-                if not isinstance(obs, np.ndarray):
-                    obs = np.array(obs)
-
-                if len(obs.shape) == 3:  # (C, H, W)
-                    obs = obs.reshape(1, *obs.shape)  # 添加 batch 维度
-                elif len(obs.shape) == 2:  # (H, W)
-                    obs = obs.reshape(1, 1, *obs.shape)  # 添加 batch+channel 维度
-
-                # 转换为 tensor 移到正确的设备
-                device = next(self.actor.parameters()).device
-                obs = torch.FloatTensor(obs).to(device)
-
+            if not isinstance(obs, torch.Tensor):
+                obs = torch.FloatTensor(obs)
             
-            inputs = (obs, True, False)  # (x, compute_pi, compute_log_pi)
-            _, pi, _, _ = self.actor(*inputs)
+            if len(obs.shape) == 3:
+                obs = obs.unsqueeze(0)
+            elif len(obs.shape) == 2:
+                obs = obs.unsqueeze(0).unsqueeze(0)
             
-            # 如果使用了 DataParallel，结果可能在不同 GPU 上，需要收集
-            if isinstance(pi, list):
-                pi = torch.cat(pi, dim=0)
+            device = next(self.parameters()).device
+            obs = obs.to(device)
             
-            # 先将 tensor 移到 CPU，再转换为 numpy
+            # 直接调用 actor
+            _, pi, _, _ = self.actor(obs)
+            
             action = pi.cpu().data.numpy().flatten()
             action = np.clip(action, -1.0, 1.0)
             action = action[:self.action_shape[0]]
             return action
 
     def update_actor_and_alpha(self, obs, L=None, step=None):
-        if isinstance(self.actor, torch.nn.DataParallel):
-            obs_encoded = self.encoder(obs)
-            inputs = (obs, True, True)  # (x, compute_pi, compute_log_pi)
-            _, pi, log_pi, log_std = self.actor(*inputs)
-            actor_Q1, actor_Q2 = self.critic(obs_encoded, pi)
-        else:
-            obs_encoded = self.actor.encoder(obs)
-            _, pi, log_pi, log_std = self.actor(obs)
-            actor_Q1, actor_Q2 = self.critic(obs_encoded, pi)
+        # 不再区分 DataParallel
+        obs_encoded = self.actor.encoder(obs)
+        _, pi, log_pi, log_std = self.actor(obs)
+        actor_Q1, actor_Q2 = self.critic(obs_encoded, pi)
 
         actor_Q = torch.min(actor_Q1, actor_Q2)
         actor_loss = (self.alpha.detach() * log_pi - actor_Q).mean()
@@ -323,8 +285,8 @@ class HiFNOAgent(SAC, nn.Module):
         self.actor_optimizer.step()
 
         self.log_alpha_optimizer.zero_grad()
-        alpha_loss = (self.alpha *
-                     (-log_pi - self.target_entropy).detach()).mean()
+        alpha_loss = (self.alpha * (-log_pi - self.target_entropy).detach()).mean()
+        
         if L is not None:
             L.log('train_alpha/loss', alpha_loss, step)
             L.log('train_alpha/value', self.alpha, step)

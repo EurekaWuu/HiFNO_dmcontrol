@@ -1,5 +1,4 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = '0,2,4'
 
 import torch
 import torch.nn as nn
@@ -15,25 +14,25 @@ from video import VideoRecorder
 from datetime import datetime
 from algorithms.hifno_multigpu import HiFNOAgent
 from torch import nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 
-def safe_sample_action(agent, obs):
+def process_obs(obs, device):
+	"""统一处理观测数据的维度转换"""
+	if not isinstance(obs, np.ndarray):
+		obs = np.array(obs)
 	
-	if isinstance(agent, nn.DataParallel):
-		return agent.module.sample_action(obs)
-	else:
-		# 如果不是 DataParallel，先包装成 DataParallel
-		agent = nn.DataParallel(agent)
-		return agent.module.sample_action(obs)
-
-def safe_select_action(agent, obs):
+	# 检查是 float32 类型
+	if obs.dtype != np.float32:
+		obs = obs.astype(np.float32)
 	
-	if isinstance(agent, nn.DataParallel):
-		return agent.module.select_action(obs)
-	else:
-		# 如果不是 DataParallel，先包装成 DataParallel
-		agent = nn.DataParallel(agent)
-		return agent.module.select_action(obs)
+	if len(obs.shape) == 3:  # (C, H, W)
+		obs = np.expand_dims(obs, axis=0)  # 添加 batch 维度 (1, C, H, W)
+	elif len(obs.shape) == 2:  # (H, W)
+		obs = np.expand_dims(np.expand_dims(obs, axis=0), axis=0)  # (1, 1, H, W)
+		
+	return torch.FloatTensor(obs).to(device)
 
 
 def evaluate(env, agent, video, num_episodes, L, step, test_env=False):
@@ -45,17 +44,9 @@ def evaluate(env, agent, video, num_episodes, L, step, test_env=False):
 		episode_reward = 0
 		while not done:
 			with utils.eval_mode(agent):
-				if not isinstance(obs, np.ndarray):
-					obs = np.array(obs)
-				
-				if len(obs.shape) == 3:
-					obs = obs.reshape(1, *obs.shape)
-				elif len(obs.shape) == 2:
-					obs = obs.reshape(1, 1, *obs.shape)
-				
-				obs = torch.from_numpy(obs).float().cuda()
-
-				action = agent.module.select_action(obs)
+				device = next(agent.parameters()).device
+				obs_tensor = process_obs(obs, device)
+				action = agent.module.select_action(obs_tensor)
 				obs, reward, done, _ = env.step(action)
 				video.record(env)
 				episode_reward += reward
@@ -70,8 +61,14 @@ def evaluate(env, agent, video, num_episodes, L, step, test_env=False):
 
 
 def main(args):
+	# 初始化进程组,获取 rank 和 world_size
+	dist.init_process_group(backend='nccl')
+	local_rank = int(os.environ.get("LOCAL_RANK", 0))
 	
-	utils.set_seed_everywhere(args.seed)
+	torch.cuda.set_device(local_rank)
+	device = torch.device("cuda", local_rank)
+
+	utils.set_seed_everywhere(args.seed + local_rank)
 
 	# Initialize environments
 	gym.logger.set_level(40)
@@ -96,16 +93,25 @@ def main(args):
 	) if args.eval_mode is not None else None
 
 	# Create working directory
-	timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-	work_dir = os.path.join(args.log_dir, args.domain_name+'_'+args.task_name, 
-						   args.algorithm, str(args.seed), timestamp)
-	print('Working directory:', work_dir)
-	utils.make_dir(work_dir)
-	utils.write_info(args, os.path.join(work_dir, 'info.log'))
-	model_dir = utils.make_dir(os.path.join(work_dir, 'model'))
-	video_dir = utils.make_dir(os.path.join(work_dir, 'video'))
-	video = VideoRecorder(video_dir if args.save_video else None)
+	if dist.get_rank() == 0:
+		timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+		work_dir = os.path.join(
+			args.log_dir, 
+			args.domain_name + '_' + args.task_name,
+			args.algorithm, 
+			str(args.seed), 
+			timestamp
+		)
+		print('Working directory:', work_dir)
+		utils.make_dir(work_dir)
+		utils.write_info(args, os.path.join(work_dir, 'info.log'))
+		model_dir = utils.make_dir(os.path.join(work_dir, 'model'))
+		video_dir = utils.make_dir(os.path.join(work_dir, 'video'))
+		video = VideoRecorder(video_dir if args.save_video else None)
+		L = Logger(work_dir)
+	dist.barrier()
 
+	
 	# Prepare agent
 	assert torch.cuda.is_available(), 'must have cuda enabled'
 	print(f"Number of available GPUs: {torch.cuda.device_count()}")
@@ -126,57 +132,48 @@ def main(args):
 	)
 	print(f"Agent type: {type(agent).__module__}.{type(agent).__name__}")
 
-	
-	device = torch.device('cuda')
+	# 包装成 DDP
 	agent = agent.to(device)
-
-	# 无论单卡还是多卡都包装成 DataParallel
-	print(f"Using {torch.cuda.device_count()} GPU(s)!")
-	agent = nn.DataParallel(agent)
+	agent = DDP(agent, device_ids=[local_rank], output_device=local_rank)
 
 	start_step, episode, episode_reward, done = 0, 0, 0, True
-	L = Logger(work_dir)
 	start_time = time.time()
 	
 	# Training loop
 	for step in range(start_step, args.train_steps+1):
 		if done:
 			if step > start_step:
-				L.log('train/duration', time.time() - start_time, step)
+				# 仅在主进程做日志
+				if dist.get_rank() == 0:
+					L.log('train/duration', time.time() - start_time, step)
 				start_time = time.time()
-				L.dump(step)
+				# 仅在主进程dump
+				if dist.get_rank() == 0:
+					L.dump(step)
 
-			# Evaluate agent periodically
-			if step % args.eval_freq == 0:
+			# Evaluate agent periodically (仅在主进程做评测和日志)
+			if dist.get_rank() == 0 and step % args.eval_freq == 0:
 				print('Evaluating:', work_dir)
 				L.log('eval/episode', episode, step)
+				
 				evaluate(env, agent, video, args.eval_episodes, L, step)
 				if test_env is not None:
 					evaluate(test_env, agent, video, args.eval_episodes, L, step, test_env=True)
 				L.dump(step)
 
-			# Save agent periodically
-			if step > start_step and step % args.save_freq == 0:
-				
-				if isinstance(agent.encoder, torch.nn.DataParallel):
-					encoder_state = agent.encoder.module.state_dict()
-					actor_state = agent.actor.module.state_dict()
-					critic_state = agent.critic.module.state_dict()
-				else:
-					encoder_state = agent.encoder.state_dict()
-					actor_state = agent.actor.state_dict() 
-					critic_state = agent.critic.state_dict()
-
+			# Save agent periodically(只在 rank=0 进行)
+			if dist.get_rank() == 0 and step > start_step and step % args.save_freq == 0:
 				torch.save(
 					{
-						'encoder': encoder_state,
-						'actor': actor_state,
-						'critic': critic_state
+						'encoder': agent.module.encoder.state_dict(),
+						'actor': agent.module.actor.state_dict(),
+						'critic': agent.module.critic.state_dict()
 					},
 					os.path.join(model_dir, f'{step}.pt')
 				)
 
-			L.log('train/episode_reward', episode_reward, step)
+			if dist.get_rank() == 0:
+				L.log('train/episode_reward', episode_reward, step)
 
 			obs = env.reset()
 			done = False
@@ -184,63 +181,45 @@ def main(args):
 			episode_step = 0
 			episode += 1
 
-			L.log('train/episode', episode, step)
+			if dist.get_rank() == 0:
+				L.log('train/episode', episode, step)
 
 		# Sample action for data collection
 		if step < args.init_steps:
-			# 处理 LazyFrames
-			if not isinstance(obs, np.ndarray):
-				obs = np.array(obs)
-			
-			if len(obs.shape) == 3:  # (C, H, W)
-				obs = obs.reshape(1, *obs.shape)
-			elif len(obs.shape) == 2:  # (H, W)
-				obs = obs.reshape(1, 1, *obs.shape)
-			
-			obs_tensor = torch.FloatTensor(obs).cuda()
+			obs_tensor = process_obs(obs, device)
 			action = agent.module.sample_action(obs_tensor)
 		else:
 			with utils.eval_mode(agent):
-				# 处理 LazyFrames
-				if not isinstance(obs, np.ndarray):
-					obs = np.array(obs)
-				
-				if len(obs.shape) == 3:  # (C, H, W)
-					obs = obs.reshape(1, *obs.shape)
-				elif len(obs.shape) == 2:  # (H, W)
-					obs = obs.reshape(1, 1, *obs.shape)
-				
-				obs_tensor = torch.FloatTensor(obs).cuda()
+				obs_tensor = process_obs(obs, device)
 				action = agent.module.sample_action(obs_tensor)
-
-		# Run training update
+		
+		# Update
 		if step >= args.init_steps:
 			num_updates = args.init_steps if step == args.init_steps else 1
 			for _ in range(num_updates):
-				agent.module.update(replay_buffer, L, step)
+				# 只在 rank 0 进程传入 Logger
+				agent.module.update(replay_buffer, L if dist.get_rank() == 0 else None, step)
 
 		# Take step
 		next_obs, reward, done, _ = env.step(action)
 		done_bool = 0 if episode_step + 1 == env._max_episode_steps else float(done)
 		
-		# 处理 LazyFrames 用于存储
-		if not isinstance(obs, np.ndarray):
-			obs_array = np.array(obs)
-		else:
-			obs_array = obs
-			
-		if not isinstance(next_obs, np.ndarray):
-			next_obs_array = np.array(next_obs)
-		else:
-			next_obs_array = next_obs
-			
+		# 处理用于存储的观测数据
+		obs_array = np.array(obs) if not isinstance(obs, np.ndarray) else obs
+		next_obs_array = np.array(next_obs) if not isinstance(next_obs, np.ndarray) else next_obs
+		
+		
+		obs_array = obs_array.astype(np.float32)
+		next_obs_array = next_obs_array.astype(np.float32)
+		
 		replay_buffer.add(obs_array, action, reward, next_obs_array, done_bool)
 		episode_reward += reward
-		obs = next_obs
-
+		
 		episode_step += 1
 
-	print('Completed training for', work_dir)
+	if dist.get_rank() == 0:
+		print('Completed training for', work_dir)
+	dist.destroy_process_group()
 
 
 if __name__ == '__main__':

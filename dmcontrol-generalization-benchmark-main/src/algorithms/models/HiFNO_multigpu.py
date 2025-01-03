@@ -65,7 +65,7 @@ class MultiScaleConv(nn.Module):
         self.activation = self.get_activation(activation)
         self.stride = stride
 
-        # 将kernel_size和stride转换为元组
+        
         if isinstance(kernel_size, int):
             self.kernel_size = (kernel_size, kernel_size)
         
@@ -235,7 +235,6 @@ class ConvResFourierLayer(nn.Module):
 
     def _update_conv(self, x):
         dims = x.dim() - 2
-        # 获取当前卷积层所在的设备
         old_device = self.conv.weight.device
         
         if dims != len(self.conv.weight.shape) - 2:
@@ -251,7 +250,7 @@ class ConvResFourierLayer(nn.Module):
             
             # 复制权重和偏置
             if hasattr(self.conv, 'weight'):
-                # 这里可能需要具体情况调整权重的复制方式
+                # 可能需要调整权重的复制方式
                 new_conv.weight.data[:] = self.conv.weight.data.unsqueeze(-1) if dims > 1 else self.conv.weight.data
             if hasattr(self.conv, 'bias') and self.conv.bias is not None:
                 new_conv.bias.data[:] = self.conv.bias.data
@@ -536,7 +535,7 @@ class HierarchicalFNO(nn.Module):
     def forward(self, x):
         B, C, *spatial_shape = x.shape
         spatial_dims = len(spatial_shape)
-        assert spatial_dims == self.spatial_dims, f"入的空间维度数量应为 {self.spatial_dims}，但得到的是 {spatial_dims}"
+        assert spatial_dims == self.spatial_dims, f"输入的空间维度数量应为 {self.spatial_dims}，但得到的是 {spatial_dims}"
 
         # 特征提取
         x = self.patch_extractor(x)
@@ -590,8 +589,11 @@ class HierarchicalFNO(nn.Module):
         # 通过 MLP 得到最终特征
         x = self.mlp_head(x)  # [B, out_channels]
         
-        # 重塑为 4D 张量
+        # 计算合适的 H 和 W
         H = W = int(np.sqrt(self.out_channels))
+        assert H * W == self.out_channels, f"out_channels ({self.out_channels}) 必须是平方数"
+        
+        # 重塑张量
         x = x.view(B, H, W, 1)
         x = x.permute(0, 3, 1, 2)  # [B, 1, H, W]
         

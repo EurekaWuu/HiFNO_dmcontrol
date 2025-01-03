@@ -9,6 +9,7 @@ from algorithms.svea import SVEA
 from algorithms.hifno import HiFNOAgent
 from algorithms.hifno_multigpu import HiFNOAgent as HiFNOAgentMultiGPU
 from algorithms.svea_vis import SVEA_VIS
+import torch.distributed as dist
 
 algorithm = {
 	'sac': SAC,
@@ -25,14 +26,18 @@ algorithm = {
 
 
 def make_agent(obs_shape, action_shape, args):
+	if dist.is_initialized():
+		world_size = dist.get_world_size()
+		args.batch_size = args.batch_size * world_size
+
 	if args.algorithm in ['hifno', 'hifno_multigpu']:
 		agent_class = algorithm[args.algorithm]
+		
 		agent = agent_class(
 			obs_shape=obs_shape,
 			action_shape=action_shape,
 			args=args
 		)
-		agent = agent.to(torch.device('cuda:0'))
 		return agent
 	# 对于其他算法
 	return algorithm[args.algorithm](obs_shape, action_shape, args)
