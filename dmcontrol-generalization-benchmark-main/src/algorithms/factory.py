@@ -4,6 +4,7 @@ from algorithms.curl import CURL
 from algorithms.pad import PAD
 from algorithms.soda import SODA
 from algorithms.drq import DrQ
+from algorithms.drqv2 import DrQV2Agent
 from algorithms.svea import SVEA
 from algorithms.hifno import HiFNOAgent
 from algorithms.hifno_bisim import HiFNOBisimAgent
@@ -16,6 +17,7 @@ algorithm = {
 	'pad': PAD,
 	'soda': SODA,
 	'drq': DrQ,
+	'drqv2': DrQV2Agent,
 	'svea': SVEA,
 	'hifno': HiFNOAgent,
 	'hifno_bisim': HiFNOBisimAgent,
@@ -32,6 +34,12 @@ def make_agent(obs_shape, action_shape, args):
 		)
 	elif args.algorithm == 'hifno_bisim':
 		return HiFNOBisimAgent(
+			obs_shape=obs_shape,
+			action_shape=action_shape,
+			args=args
+		)
+	elif args.algorithm == 'drqv2':
+		return DrQV2Agent(
 			obs_shape=obs_shape,
 			action_shape=action_shape,
 			args=args

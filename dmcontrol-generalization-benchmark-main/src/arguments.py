@@ -88,10 +88,26 @@ def parse_args():
 	parser.add_argument('--bisim_p', type=int, default=2,
 						help='Norm used in bisimulation distance calculation')
 
+	# → 新增: drqv2 相关参数
+	parser.add_argument('--feature_dim', default=50, type=int,
+						help='Feature dimension used by DrQV2 encoder')
+	parser.add_argument('--update_every_steps', default=2, type=int,
+						help='Training frequency of DrQV2')
+	parser.add_argument('--stddev_schedule', default='linear(1.0,0.1,500000)',
+						type=str,
+						help='Schedule for stddev in DrQV2')
+	parser.add_argument('--stddev_clip', default=0.3, type=float,
+						help='Clip range for stddev in DrQV2')
+	parser.add_argument('--num_expl_steps', default=2000, type=int,
+						help='Exploration steps for DrQV2')
+	parser.add_argument('--use_tb', default=True, action='store_true',
+						help='Whether to record training logs e.g. in TensorBoard')
+
 	args = parser.parse_args()
 
 	assert args.algorithm in {
-		'sac', 'rad', 'curl', 'pad', 'soda', 'drq', 'svea', 'hifno', 'hifno_multigpu', 'hifno_bisim'
+		'sac', 'rad', 'curl', 'pad', 'soda', 'drq', 'drqv2',
+		'svea', 'hifno', 'hifno_multigpu', 'hifno_bisim'
 	}, f'specified algorithm "{args.algorithm}" is not supported'
 
 	assert args.eval_mode in {'train', 'color_easy', 'color_hard', 'video_easy', 'video_hard', 'distracting_cs', 'none'}, f'specified mode "{args.eval_mode}" is not supported'

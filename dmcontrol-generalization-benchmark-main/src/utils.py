@@ -7,6 +7,24 @@ import random
 import augmentations
 import subprocess
 from datetime import datetime
+import re
+
+
+def schedule(schedule_str, step):
+    """
+    linear(a,b,n) 从a线性衰减到b，用时n步
+    常数值 直接返回该数值
+    """
+    try:
+        return float(schedule_str)
+    except ValueError:
+        match = re.match(r'linear\(([\d.]+),([\d.]+),(\d+)\)', schedule_str)
+        if match:
+            start, end, duration = [float(g) for g in match.groups()]
+            mix = min(1.0, step / duration)
+            return start + (end - start) * mix
+        else:
+            raise ValueError(f'Invalid schedule format: {schedule_str}')
 
 
 class eval_mode(object):
