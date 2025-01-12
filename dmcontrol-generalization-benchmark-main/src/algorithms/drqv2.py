@@ -13,24 +13,37 @@ import utils
 from algorithms.modules import weight_init
 
 
-class TruncatedNormal:
-    def __init__(self, mu, std):
-        self.mu = mu
-        self.std = std
-        self.dist = td.Normal(mu, std)
+class TruncatedNormal(td.Normal):
+    def __init__(self, loc, scale, low=-1.0, high=1.0, eps=1e-6):
+        super().__init__(loc, scale, validate_args=False)
+        self.low = low
+        self.high = high
+        self.eps = eps
+        self.loc = loc
+        self.scale = scale
 
-    def sample(self, clip=None):
-        actions = self.dist.rsample()
+    def _clamp(self, x):
+        clamped_x = torch.clamp(x, self.low + self.eps, self.high - self.eps)
+        x = x - x.detach() + clamped_x.detach()
+        return x
+
+    def sample(self, clip=None, sample_shape=torch.Size()):
+        shape = self._extended_shape(sample_shape)
+        eps = torch.randn(shape, dtype=self.loc.dtype, device=self.loc.device)
+        eps = eps * self.scale
+        
         if clip is not None:
-            actions = torch.clamp(actions, -clip, clip)
-        return torch.clamp(actions, -1, 1)
+            eps = torch.clamp(eps, -clip, clip)
+            
+        x = self.loc + eps
+        return self._clamp(x)
 
-    def log_prob(self, actions):
-        return self.dist.log_prob(actions)
+    def log_prob(self, value):
+        return super().log_prob(value)
 
     @property
     def mean(self):
-        return torch.clamp(self.mu, -1, 1)
+        return self._clamp(self.loc)
 
 
 class RandomShiftsAug(nn.Module):
@@ -127,7 +140,7 @@ class Actor(nn.Module):
         mu = torch.tanh(mu)  # 动作限幅在 [-1, 1]
         std = torch.ones_like(mu) * std
 
-        dist = TruncatedNormal(mu, std)
+        dist = TruncatedNormal(mu, std, low=-1.0, high=1.0, eps=1e-6)
         return dist
 
 
@@ -181,7 +194,7 @@ class DrQV2Agent:
         self.num_expl_steps = args.num_expl_steps
         self.stddev_schedule = args.stddev_schedule
         self.stddev_clip = args.stddev_clip
-        self.min_std = 1e-4  # 最小标准差
+        self.min_std = 1e-4  
         self._step = 0  
         lr = args.lr
         feature_dim = args.feature_dim
@@ -225,6 +238,8 @@ class DrQV2Agent:
 
         self.train()
         self.critic_target.train()
+
+        self.episode_reward = 0  
 
     @property
     def alpha(self):
@@ -290,7 +305,6 @@ class DrQV2Agent:
         Q1, Q2 = self.critic(obs, action)
         critic_loss = F.mse_loss(Q1, target_Q) + F.mse_loss(Q2, target_Q)
 
-        
         if self.use_tb:
             metrics['train/critic_loss'] = critic_loss.item()
             metrics['train/critic_q1'] = Q1.mean().item()
@@ -307,27 +321,26 @@ class DrQV2Agent:
         return metrics
 
     def update_actor(self, obs, step):
-        """同时更新 Actor 和 alpha."""
         metrics = dict()
 
-        # 策略分布
+        
         stddev = utils.schedule(self.stddev_schedule, step)
         dist = self.actor(obs, stddev)
         action = dist.sample(clip=self.stddev_clip)
         log_prob = dist.log_prob(action).sum(-1, keepdim=True)  # (B,1)
 
-        # 计算 Q
+        
         Q1, Q2 = self.critic(obs, action)
         Q = torch.min(Q1, Q2)
 
-        # 计算 actor_loss: alpha * log_prob - Q
+        
         actor_loss = (self.alpha.detach() * log_prob - Q).mean()
 
         self.actor_opt.zero_grad(set_to_none=True)
         actor_loss.backward()
         self.actor_opt.step()
 
-        #  alpha_loss
+        
         alpha_loss = (self.alpha * (-log_prob - self.target_entropy).detach()).mean()
         self.log_alpha_opt.zero_grad(set_to_none=True)
         alpha_loss.backward()
@@ -354,7 +367,7 @@ class DrQV2Agent:
         action = action.to(self.device)
         reward = reward.to(self.device)
         next_obs = next_obs.to(self.device)
-        discount = not_done  #  not_done 作为折扣因子
+        discount = not_done  # not_done 作为折扣因子
 
         
         obs = self.aug(obs.float())
@@ -364,10 +377,6 @@ class DrQV2Agent:
         obs = self.encoder(obs)
         with torch.no_grad():
             next_obs = self.encoder(next_obs)
-
-        
-        if self.use_tb:
-            L.log('train/episode_reward', reward.mean().item(), step)
 
         
         critic_metrics = self.update_critic(obs, action, reward, discount, next_obs, step)
