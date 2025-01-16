@@ -1,7 +1,10 @@
+import sys
+sys.path.append('/mnt/lustre/GPU4/home/wuhanpeng/dmcontrol/src/env/dm_control')
 from gym import core, spaces
 from dm_control import suite
 from dm_env import specs
 import numpy as np
+
 
 
 def _spec_to_box(spec):
@@ -79,16 +82,37 @@ class DMCWrapper(core.Env):
                 dynamic=True,
                 background_dataset_paths=background_dataset_paths
             )
+        # else:
+        #     from dm_control import suite as dm_suite
+        #     self._env = dm_suite.load(
+        #         domain_name=domain_name,
+        #         task_name=task_name,
+        #         task_kwargs=task_kwargs,
+        #         visualize_reward=visualize_reward,
+        #         environment_kwargs=environment_kwargs,
+        #         setting_kwargs=setting_kwargs
+        #     )
         else:
             from dm_control import suite as dm_suite
-            self._env = dm_suite.load(
-                domain_name=domain_name,
-                task_name=task_name,
-                task_kwargs=task_kwargs,
-                visualize_reward=visualize_reward,
-                environment_kwargs=environment_kwargs,
-                setting_kwargs=setting_kwargs
-            )
+            try:
+                self._env = dm_suite.load(
+                    domain_name=domain_name,
+                    task_name=task_name,
+                    task_kwargs=task_kwargs,
+                    visualize_reward=visualize_reward,
+                    environment_kwargs=environment_kwargs,
+                    setting_kwargs=setting_kwargs
+                )
+            except TypeError:
+                # 如果 dm_suite.load() 不接受 setting_kwargs
+                self._env = dm_suite.load(
+                    domain_name=domain_name,
+                    task_name=task_name,
+                    task_kwargs=task_kwargs,
+                    visualize_reward=visualize_reward,
+                    environment_kwargs=environment_kwargs
+                )
+
 
         # true and normalized action spaces
         self._true_action_space = _spec_to_box([self._env.action_spec()])
