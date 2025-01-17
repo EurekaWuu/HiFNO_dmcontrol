@@ -9,6 +9,7 @@ from algorithms.svea import SVEA
 from algorithms.hifno import HiFNOAgent
 from algorithms.hifno_bisim import HiFNOBisimAgent
 from algorithms.svea_vis import SVEA_VIS
+from algorithms.pieg import PIEG
 
 algorithm = {
 	'sac': SAC,
@@ -21,7 +22,8 @@ algorithm = {
 	'svea': SVEA,
 	'hifno': HiFNOAgent,
 	'hifno_bisim': HiFNOBisimAgent,
-	'svea_vis': SVEA_VIS
+	'svea_vis': SVEA_VIS,
+	'pieg': PIEG
 }
 
 

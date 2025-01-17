@@ -8,6 +8,15 @@ import augmentations
 import subprocess
 from datetime import datetime
 import re
+import torchvision.transforms as TF
+import torchvision.datasets as datasets
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+import torch.distributions as pyd
+from torch.distributions.utils import _standard_normal
+
+places_dataloader = None
+places_iter = None
 
 
 def schedule(schedule_str, step):
@@ -73,12 +82,29 @@ def write_info(args, fp):
 
 
 def load_config(key=None):
-    path = os.path.join('setup', 'config.cfg')
-    with open(path) as f:
-        data = json.load(f)
-    if key is not None:
-        return data[key]
-    return data
+    current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(current_dir, 'setup', 'config.cfg')
+    
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        if key is not None:
+            return data[key]
+        return data
+    except FileNotFoundError:
+        default_config = {
+            "datasets": [
+                "/mnt/lustre/GPU4/home/wuhanpeng/dmcontrol/datasets/DAVIS",
+                "/mnt/lustre/GPU4/home/wuhanpeng/dmcontrol/datasets/places365_standard"
+            ]
+        }
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(default_config, f, indent=4)
+        
+        if key is not None:
+            return default_config[key]
+        return default_config
 
 
 def make_dir(dir_path):
@@ -279,3 +305,80 @@ class BisimReplayBuffer(ReplayBuffer):
         not_dones = torch.as_tensor(self.not_dones[idxs]).cuda()
         
         return obs, actions, rewards, next_obs, not_dones
+
+
+def _load_places(batch_size=256, image_size=84, num_workers=8, use_val=False):
+    global places_dataloader, places_iter
+    partition = 'val' if use_val else 'train'
+    print(f'Loading {partition} partition of places365_standard...')
+    for data_dir in load_config('datasets'):
+        if os.path.exists(data_dir):
+            fp = os.path.join(data_dir, 'places365_standard', partition)
+            if not os.path.exists(fp):
+                print(f'Warning: path {fp} does not exist, falling back to {data_dir}')
+                fp = data_dir
+            places_dataloader = torch.utils.data.DataLoader(
+                datasets.ImageFolder(fp, TF.Compose([
+                    TF.RandomResizedCrop(image_size),
+                    TF.RandomHorizontalFlip(),
+                    TF.ToTensor()
+                ])),
+                batch_size=batch_size, shuffle=True,
+                num_workers=num_workers, pin_memory=True)
+            places_iter = iter(places_dataloader)
+            break
+    if places_iter is None:
+        raise FileNotFoundError('failed to find places365 data at any of the specified paths')
+    print('Loaded dataset from', data_dir)
+
+
+def _get_places_batch(batch_size):
+    global places_iter
+    try:
+        imgs, _ = next(places_iter)
+        if imgs.size(0) < batch_size:
+            places_iter = iter(places_dataloader)
+            imgs, _ = next(places_iter)
+    except StopIteration:
+        places_iter = iter(places_dataloader)
+        imgs, _ = next(places_iter)
+    return imgs.cuda()
+
+
+def random_overlay(x, dataset='places365_standard'):
+    """Randomly overlay an image from Places"""
+    global places_iter
+    alpha = 0.5
+
+    if dataset == 'places365_standard':
+        if places_dataloader is None:
+            _load_places(batch_size=x.size(0), image_size=x.size(-1))
+        imgs = _get_places_batch(batch_size=x.size(0)).repeat(1, x.size(1)//3, 1, 1)
+    else:
+        raise NotImplementedError(f'overlay has not been implemented for dataset "{dataset}"')
+
+    return ((1-alpha)*(x/255.) + (alpha)*imgs)*255.
+
+
+class TruncatedNormal(pyd.Normal):
+    def __init__(self, loc, scale, low=-1.0, high=1.0, eps=1e-6):
+        super().__init__(loc, scale, validate_args=False)
+        self.low = low
+        self.high = high
+        self.eps = eps
+
+    def _clamp(self, x):
+        clamped_x = torch.clamp(x, self.low + self.eps, self.high - self.eps)
+        x = x - x.detach() + clamped_x.detach()
+        return x
+
+    def sample(self, clip=None, sample_shape=torch.Size()):
+        shape = self._extended_shape(sample_shape)
+        eps = _standard_normal(shape,
+                               dtype=self.loc.dtype,
+                               device=self.loc.device)
+        eps *= self.scale
+        if clip is not None:
+            eps = torch.clamp(eps, -clip, clip)
+        x = self.loc + eps
+        return self._clamp(x)

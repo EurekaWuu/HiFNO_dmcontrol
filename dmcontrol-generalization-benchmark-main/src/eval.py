@@ -115,3 +115,17 @@ def main(args):
 if __name__ == '__main__':
 	args = parse_args()
 	main(args)
+
+
+'''
+python eval.py \
+    --algorithm svea \
+    --domain_name walker \
+    --task_name walk \
+    --seed 1 \
+    --eval_mode color_hard \
+    --train_steps 500000 \
+    --log_dir /mnt/lustre/GPU4/home/wuhanpeng/dmcontrol-generalization-benchmark-main/logs/svea/svea_walker_walk_20241224_111447 \
+    --save_video
+
+'''
