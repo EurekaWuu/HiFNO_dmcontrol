@@ -17,6 +17,23 @@ import torchvision.datasets as datasets
 from PIL import Image
 import random
 
+class Places365Dataset(torch.utils.data.Dataset):
+    def __init__(self, root_dir, file_list, transform=None):
+        super().__init__()
+        self.root_dir = root_dir
+        self.file_list = file_list
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.file_list)
+
+    def __getitem__(self, idx):
+        img_name = self.file_list[idx]
+        img_path = os.path.join(self.root_dir, img_name)
+        image = Image.open(img_path).convert('RGB')
+        if self.transform:
+            image = self.transform(image)
+        return image, 0
 
 class RandomShiftsAug(nn.Module):
     def __init__(self, pad):
@@ -217,12 +234,9 @@ class PIEG:
         from utils import load_config
         from PIL import Image
         
-
-        
         for data_dir in load_config('datasets'):
             if not os.path.exists(data_dir):
                 continue
-            
             
             if 'places365_standard' in data_dir:
                 train_file = os.path.join(data_dir, 'train.txt')
@@ -234,27 +248,23 @@ class PIEG:
                         image_list = [line.strip() for line in f.readlines()]
                     print(f"Found {len(image_list)} images in train.txt")
                     
-                    class Places365Dataset(torch.utils.data.Dataset):
-                        def __init__(self, root_dir, file_list, transform=None):
-                            self.root_dir = root_dir
-                            self.file_list = file_list
-                            self.transform = transform
-                        
-                        def __len__(self):
-                            return len(self.file_list)
-                        
-                        def __getitem__(self, idx):
-                            img_name = self.file_list[idx]
-                            img_path = os.path.join(self.root_dir, img_name)
-                            image = Image.open(img_path).convert('RGB')
-                            if self.transform:
-                                image = self.transform(image)
-                            return image, 0
                     
+                    transform = transforms.Compose([
+                        transforms.RandomResizedCrop(image_size),
+                        transforms.RandomHorizontalFlip(),
+                        transforms.ToTensor()
+                    ])
+                    dataset = Places365Dataset(data_dir, image_list, transform=transform)
                     
-                    self.places_dataset = Places365Dataset(data_dir, image_list, None)
-                    self.image_size = image_size
-                    print(f'Successfully initialized Places365 dataset from {data_dir}')
+                    self.places_dataloader = torch.utils.data.DataLoader(
+                        dataset,
+                        batch_size=batch_size,
+                        shuffle=True,
+                        num_workers=4,
+                        pin_memory=True
+                    )
+                    self.places_iter = iter(self.places_dataloader)
+                    print(f'Successfully loaded Places365 dataset from {data_dir}')
                     return
                     
                 except Exception as e:
@@ -264,27 +274,11 @@ class PIEG:
         raise FileNotFoundError('Failed to load Places365 dataset')
 
     def _get_places_batch(self, batch_size):
-        """获取一批 Places365 图像，使用动态的 batch_size"""
-        # 如果数据加载器不存在或 batch_size 不匹配，创建新的数据加载器
-        if (self.places_dataloader is None or 
-            self.places_dataloader.batch_size != batch_size):
-            transform = transforms.Compose([
-                transforms.RandomResizedCrop(self.image_size),
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor()
-            ])
-            self.places_dataset.transform = transform
-            self.places_dataloader = torch.utils.data.DataLoader(
-                self.places_dataset,
-                batch_size=batch_size,
-                shuffle=True,
-                num_workers=4,
-                pin_memory=True
-            )
-            self.places_iter = iter(self.places_dataloader)
-        
         try:
             imgs, _ = next(self.places_iter)
+            if imgs.size(0) < batch_size:
+                self.places_iter = iter(self.places_dataloader)
+                imgs, _ = next(self.places_iter)
         except (StopIteration, AttributeError):
             self.places_iter = iter(self.places_dataloader)
             imgs, _ = next(self.places_iter)
@@ -293,6 +287,9 @@ class PIEG:
     def _random_overlay(self, x):
         """在图像上随机叠加 Places365 图像"""
         alpha = 0.5
+        # 如果当前batch size与数据加载器不匹配，重新初始化数据加载器
+        if self.places_dataloader is None or self.places_dataloader.batch_size != x.size(0):
+            self._init_places_loader(batch_size=x.size(0), image_size=x.size(-1))
         imgs = self._get_places_batch(batch_size=x.size(0)).repeat(1, x.size(1)//3, 1, 1)
         return ((1-alpha)*(x/255.) + (alpha)*imgs)*255.
 
