@@ -196,11 +196,12 @@ class DrQV2Agent:
         self.stddev_clip = args.stddev_clip
         self.min_std = 1e-4  
         self._step = 0  
+        self.actor_update_freq = args.actor_update_freq  
+
         lr = args.lr
         feature_dim = args.feature_dim
         hidden_dim = args.hidden_dim
 
-        
         self.encoder = Encoder(obs_shape).to(self.device)
         self.actor = Actor(
             self.encoder.repr_dim,
@@ -223,17 +224,19 @@ class DrQV2Agent:
         ).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
 
-        
         self.encoder_opt = torch.optim.Adam(self.encoder.parameters(), lr=lr)
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=lr)
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=lr)
 
+        self.log_alpha = torch.tensor(np.log(args.init_temperature), device=self.device)
+        self.log_alpha.requires_grad = True
+        self.log_alpha_opt = torch.optim.Adam(
+            [self.log_alpha],
+            lr=args.alpha_lr,
+            betas=(args.alpha_beta, 0.999)
+        )
+        self.target_entropy = -float(np.prod(action_shape))
 
-        self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
-        self.log_alpha_opt = torch.optim.Adam([self.log_alpha], lr=lr)
-        self.target_entropy = -float(action_shape[0])
-
-        
         self.aug = RandomShiftsAug(pad=4)
 
         self.train()
@@ -254,14 +257,13 @@ class DrQV2Agent:
 
     def select_action(self, obs):
         with torch.no_grad():
-            
             if not isinstance(obs, np.ndarray):
                 obs = np.array(obs)
             
             if len(obs.shape) == 3:  # (C, H, W)
-                obs = obs.reshape(1, *obs.shape)  # 添加batch维度
+                obs = obs.reshape(1, *obs.shape)
             elif len(obs.shape) == 2:  # (H, W)
-                obs = obs.reshape(1, 1, *obs.shape)  # 添加batch和channel维度
+                obs = obs.reshape(1, 1, *obs.shape)
 
             obs = torch.FloatTensor(obs).to(self.device)
             obs = self.encoder(obs)
@@ -271,7 +273,6 @@ class DrQV2Agent:
 
     def sample_action(self, obs):
         with torch.no_grad():
-            
             if not isinstance(obs, np.ndarray):
                 obs = np.array(obs)
             
@@ -292,7 +293,6 @@ class DrQV2Agent:
     def update_critic(self, obs, action, reward, discount, next_obs, step):
         metrics = dict()
 
-        # 计算目标 Q
         with torch.no_grad():
             stddev = utils.schedule(self.stddev_schedule, step)
             dist = self.actor(next_obs, stddev)
@@ -301,7 +301,6 @@ class DrQV2Agent:
             target_V = torch.min(target_Q1, target_Q2)
             target_Q = reward + (discount * target_V)
 
-        # 当前 Q
         Q1, Q2 = self.critic(obs, action)
         critic_loss = F.mse_loss(Q1, target_Q) + F.mse_loss(Q2, target_Q)
 
@@ -311,7 +310,6 @@ class DrQV2Agent:
             metrics['train/critic_q2'] = Q2.mean().item()
             metrics['train/critic_target_q'] = target_Q.mean().item()
 
-        
         self.encoder_opt.zero_grad(set_to_none=True)
         self.critic_opt.zero_grad(set_to_none=True)
         critic_loss.backward()
@@ -322,31 +320,28 @@ class DrQV2Agent:
 
     def update_actor(self, obs, step):
         metrics = dict()
-
         
         stddev = utils.schedule(self.stddev_schedule, step)
         dist = self.actor(obs, stddev)
         action = dist.sample(clip=self.stddev_clip)
         log_prob = dist.log_prob(action).sum(-1, keepdim=True)  # (B,1)
 
-        
         Q1, Q2 = self.critic(obs, action)
         Q = torch.min(Q1, Q2)
 
-        
+        # actor loss
         actor_loss = (self.alpha.detach() * log_prob - Q).mean()
 
         self.actor_opt.zero_grad(set_to_none=True)
         actor_loss.backward()
         self.actor_opt.step()
 
-        
+        # alpha loss
         alpha_loss = (self.alpha * (-log_prob - self.target_entropy).detach()).mean()
         self.log_alpha_opt.zero_grad(set_to_none=True)
         alpha_loss.backward()
         self.log_alpha_opt.step()
 
-        
         if self.use_tb:
             metrics['train/actor_loss'] = actor_loss.item()
             metrics['train/actor_logprob'] = log_prob.mean().item()
@@ -367,28 +362,25 @@ class DrQV2Agent:
         action = action.to(self.device)
         reward = reward.to(self.device)
         next_obs = next_obs.to(self.device)
-        discount = not_done  # not_done 作为折扣因子
 
-        
+        discount = not_done
+
         obs = self.aug(obs.float())
         next_obs = self.aug(next_obs.float())
 
-        
         obs = self.encoder(obs)
         with torch.no_grad():
             next_obs = self.encoder(next_obs)
 
-        
         critic_metrics = self.update_critic(obs, action, reward, discount, next_obs, step)
         if self.use_tb:
             for k, v in critic_metrics.items():
                 L.log(k, v, step)
 
-        
-        actor_metrics = self.update_actor(obs.detach(), step)
-        if self.use_tb:
-            for k, v in actor_metrics.items():
-                L.log(k, v, step)
+        if step % self.actor_update_freq == 0:
+            actor_metrics = self.update_actor(obs.detach(), step)
+            if self.use_tb:
+                for k, v in actor_metrics.items():
+                    L.log(k, v, step)
 
-        
         utils.soft_update_params(self.critic, self.critic_target, self.critic_target_tau)
