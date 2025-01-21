@@ -230,6 +230,19 @@ class PIEG:
         self.places_iter = None
         self._init_places_loader(batch_size=32, image_size=84)
 
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        if 'places_dataloader' in state:
+            del state['places_dataloader']
+        if 'places_iter' in state:
+            del state['places_iter']
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self.places_dataloader = None
+        self.places_iter = None
+
     def _init_places_loader(self, batch_size=32, image_size=84):
         from utils import load_config
         from PIL import Image
