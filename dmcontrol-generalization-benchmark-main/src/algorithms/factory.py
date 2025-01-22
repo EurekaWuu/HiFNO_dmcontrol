@@ -5,6 +5,7 @@ from algorithms.pad import PAD
 from algorithms.soda import SODA
 from algorithms.drq import DrQ
 from algorithms.drqv2 import DrQV2Agent
+from algorithms.drqv2_notem import DrQV2NoTemAgent
 from algorithms.svea import SVEA
 from algorithms.hifno import HiFNOAgent
 from algorithms.hifno_bisim import HiFNOBisimAgent
@@ -19,6 +20,7 @@ algorithm = {
 	'soda': SODA,
 	'drq': DrQ,
 	'drqv2': DrQV2Agent,
+	'drqv2_notem': DrQV2NoTemAgent,
 	'svea': SVEA,
 	'hifno': HiFNOAgent,
 	'hifno_bisim': HiFNOBisimAgent,
@@ -42,6 +44,12 @@ def make_agent(obs_shape, action_shape, args):
 		)
 	elif args.algorithm == 'drqv2':
 		return DrQV2Agent(
+			obs_shape=obs_shape,
+			action_shape=action_shape,
+			args=args
+		)
+	elif args.algorithm == 'drqv2_notem':
+		return DrQV2NoTemAgent(
 			obs_shape=obs_shape,
 			action_shape=action_shape,
 			args=args

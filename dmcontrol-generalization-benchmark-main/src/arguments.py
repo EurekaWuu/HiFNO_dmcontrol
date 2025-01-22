@@ -106,7 +106,7 @@ def parse_args():
 	args = parser.parse_args()
 
 	assert args.algorithm in {
-		'sac', 'rad', 'curl', 'pad', 'soda', 'drq', 'drqv2',
+		'sac', 'rad', 'curl', 'pad', 'soda', 'drq', 'drqv2', 'drqv2_notem',
 		'svea', 'hifno', 'hifno_multigpu', 'hifno_bisim', 'pieg'
 	}, f'specified algorithm "{args.algorithm}" is not supported'
 
