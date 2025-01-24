@@ -1,5 +1,6 @@
 import argparse
 import numpy as np
+import os
 
 
 def parse_args():
@@ -93,6 +94,12 @@ def parse_args():
 						help='Feature dimension used by encoders')
 	parser.add_argument('--update_every_steps', default=2, type=int,
 						help='Training frequency')
+	parser.add_argument('--replay_dir', default='replay',
+						help='Directory to store replay data')
+	parser.add_argument('--num_workers', default=4, type=int,
+						help='Number of workers for replay data loading')
+	parser.add_argument('--nstep', default=3, type=int,
+						help='Number of steps for n-step returns')
 	parser.add_argument('--stddev_schedule', default='linear(1.0,0.1,500000)',
 						type=str,
 						help='Schedule for action std')
@@ -102,11 +109,13 @@ def parse_args():
 						help='Exploration steps')
 	parser.add_argument('--use_tb', default=True, action='store_true',
 						help='Whether to record training logs e.g. in TensorBoard')
+	parser.add_argument('--num_seed_frames', default=4000, type=int,
+						help='Number of frames to collect before training（用于drqv2_official）')
 
 	args = parser.parse_args()
 
 	assert args.algorithm in {
-		'sac', 'rad', 'curl', 'pad', 'soda', 'drq', 'drqv2', 'drqv2_notem',
+		'sac', 'rad', 'curl', 'pad', 'soda', 'drq', 'drqv2', 'drqv2_notem', 'drqv2_official',
 		'svea', 'hifno', 'hifno_multigpu', 'hifno_bisim', 'pieg'
 	}, f'specified algorithm "{args.algorithm}" is not supported'
 
@@ -131,4 +140,8 @@ def parse_args():
 		args.image_size = 84
 		args.image_crop_size = 84
 	
+	
+	if args.algorithm == 'drqv2_official':
+		os.makedirs(args.replay_dir, exist_ok=True)
+
 	return args

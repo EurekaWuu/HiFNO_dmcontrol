@@ -9,6 +9,8 @@ from env.wrappers import make_env
 from algorithms.factory import make_agent
 from logger import Logger
 from video import VideoRecorder
+from algorithms.drqv2_official import DrQReplayBuffer, make_drq_replay_loader
+from pathlib import Path
 
 
 def evaluate(env, agent, video, num_episodes, L, step, test_env=False):
@@ -72,12 +74,36 @@ def main(args):
 
 	# Prepare agent
 	assert torch.cuda.is_available(), 'must have cuda enabled'
-	replay_buffer = utils.ReplayBuffer(
-		obs_shape=env.observation_space.shape,
-		action_shape=env.action_space.shape,
-		capacity=args.train_steps,
-		batch_size=args.batch_size
-	)
+
+	if args.algorithm == 'drqv2_official':
+		replay_buffer = DrQReplayBuffer(
+			replay_dir=Path(args.replay_dir),
+			max_size=args.train_steps,
+			num_workers=args.num_workers,
+			nstep=args.nstep,
+			discount=args.discount,
+			fetch_every=1000,
+			save_snapshot=True
+		)
+		replay_loader = make_drq_replay_loader(
+			replay_dir=Path(args.replay_dir),
+			max_size=args.train_steps,
+			batch_size=args.batch_size,
+			num_workers=args.num_workers,
+			save_snapshot=True,
+			nstep=args.nstep,
+			discount=args.discount
+		)
+		replay_iter = iter(replay_loader)
+	else:
+		replay_buffer = utils.ReplayBuffer(
+			obs_shape=env.observation_space.shape,
+			action_shape=env.action_space.shape,
+			capacity=args.train_steps,
+			batch_size=args.batch_size
+		)
+		replay_iter = None
+
 	cropped_obs_shape = (3*args.frame_stack, args.image_crop_size, args.image_crop_size)
 	print('Observations:', env.observation_space.shape)
 	print('Cropped observations:', cropped_obs_shape)
@@ -131,7 +157,12 @@ def main(args):
 		if step >= args.init_steps:
 			num_updates = args.init_steps if step == args.init_steps else 1
 			for _ in range(num_updates):
-				agent.update(replay_buffer, L, step)
+				if args.algorithm == 'drqv2_official':
+					# print(f"\n[Step {step}] Using drqv2_official with replay_iter")
+					# print(f"Replay iter type: {type(replay_iter)}")
+					metrics = agent.update(replay_iter, L, step)
+				else:
+					metrics = agent.update(replay_buffer, L, step)
 
 		# Take step
 		next_obs, reward, done, _ = env.step(action)

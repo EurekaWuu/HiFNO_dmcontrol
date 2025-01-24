@@ -6,6 +6,7 @@ from algorithms.soda import SODA
 from algorithms.drq import DrQ
 from algorithms.drqv2 import DrQV2Agent
 from algorithms.drqv2_notem import DrQV2NoTemAgent
+from algorithms.drqv2_official import DrQV2OffAgent
 from algorithms.svea import SVEA
 from algorithms.hifno import HiFNOAgent
 from algorithms.hifno_bisim import HiFNOBisimAgent
@@ -21,6 +22,7 @@ algorithm = {
 	'drq': DrQ,
 	'drqv2': DrQV2Agent,
 	'drqv2_notem': DrQV2NoTemAgent,
+	'drqv2_official': DrQV2OffAgent,
 	'svea': SVEA,
 	'hifno': HiFNOAgent,
 	'hifno_bisim': HiFNOBisimAgent,
@@ -53,5 +55,23 @@ def make_agent(obs_shape, action_shape, args):
 			obs_shape=obs_shape,
 			action_shape=action_shape,
 			args=args
+		)
+	elif args.algorithm == 'drqv2_official':
+		return DrQV2OffAgent(
+			obs_shape=obs_shape,
+			action_shape=action_shape,
+			device=args.device if hasattr(args, 'device') else 'cuda',
+			lr=args.lr,
+			feature_dim=args.feature_dim,
+			hidden_dim=args.hidden_dim,
+			critic_target_tau=args.critic_target_tau,
+			num_expl_steps=args.num_expl_steps,
+			update_every_steps=args.update_every_steps,
+			stddev_schedule=args.stddev_schedule,
+			stddev_clip=args.stddev_clip,
+			use_tb=args.use_tb,
+			batch_size=args.batch_size,
+			num_seed_frames=args.num_seed_frames,
+			action_repeat=args.action_repeat
 		)
 	return algorithm[args.algorithm](obs_shape, action_shape, args)
