@@ -181,7 +181,7 @@ class Actor(nn.Module):
 class Critic(nn.Module):
     def __init__(self, repr_dim, action_shape, feature_dim, hidden_dim):
         super().__init__()
-
+        self.action_shape = action_shape  # 保存动作形状参数
         self.trunk = nn.Sequential(
             nn.Linear(repr_dim, feature_dim),
             nn.LayerNorm(feature_dim),
@@ -208,7 +208,10 @@ class Critic(nn.Module):
 
     def forward(self, obs, action):
         h = self.trunk(obs)
+        # 确保动作维度正确
+        assert action.shape[1] == self.action_shape[0], f"Expected action dimension {self.action_shape[0]}, but got {action.shape[1]}"
         h_action = torch.cat([h, action], dim=-1)
+        # print(f"Dimension of h_action before Q1 and Q2: {h_action.shape}")  # 注释掉打印维度信息
         q1 = self.Q1(h_action)
         q2 = self.Q2(h_action)
         return q1, q2
