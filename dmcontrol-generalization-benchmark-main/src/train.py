@@ -76,6 +76,10 @@ def main(args):
 	assert torch.cuda.is_available(), 'must have cuda enabled'
 
 	if args.algorithm == 'drqv2_official':
+		# 获取环境的动作维度
+		action_dim = env.action_space.shape[0]
+		print(f"Environment action dimension: {action_dim}")
+		
 		replay_buffer = DrQReplayBuffer(
 			replay_dir=Path(args.replay_dir),
 			max_size=args.train_steps,
@@ -83,7 +87,8 @@ def main(args):
 			nstep=args.nstep,
 			discount=args.discount,
 			fetch_every=1000,
-			save_snapshot=True
+			save_snapshot=True,
+			action_dim=action_dim  # 传入动作维度
 		)
 		replay_loader = make_drq_replay_loader(
 			replay_dir=Path(args.replay_dir),
@@ -92,7 +97,8 @@ def main(args):
 			num_workers=args.num_workers,
 			save_snapshot=True,
 			nstep=args.nstep,
-			discount=args.discount
+			discount=args.discount,
+			action_dim=action_dim  # 传入动作维度
 		)
 		replay_iter = iter(replay_loader)
 	else:
@@ -107,6 +113,8 @@ def main(args):
 	cropped_obs_shape = (3*args.frame_stack, args.image_crop_size, args.image_crop_size)
 	print('Observations:', env.observation_space.shape)
 	print('Cropped observations:', cropped_obs_shape)
+	print('Environment action space:', env.action_space)
+	print('Environment action shape:', env.action_space.shape)
 	agent = make_agent(
 		obs_shape=cropped_obs_shape,
 		action_shape=env.action_space.shape,

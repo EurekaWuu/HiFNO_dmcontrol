@@ -208,7 +208,7 @@ class Critic(nn.Module):
 
     def forward(self, obs, action):
         h = self.trunk(obs)
-        # 确保动作维度正确
+        # 动作维度
         assert action.shape[1] == self.action_shape[0], f"Expected action dimension {self.action_shape[0]}, but got {action.shape[1]}"
         h_action = torch.cat([h, action], dim=-1)
         # print(f"Dimension of h_action before Q1 and Q2: {h_action.shape}")  # 注释掉打印维度信息
@@ -261,7 +261,7 @@ class ReplayBufferStorage:
 
 class DrQReplayBuffer(IterableDataset):
     def __init__(self, replay_dir, max_size, num_workers, nstep, discount,
-                 fetch_every, save_snapshot):
+                 fetch_every, save_snapshot, action_dim):
         self._replay_dir = replay_dir
         self._size = 0
         self._max_size = max_size
@@ -273,6 +273,7 @@ class DrQReplayBuffer(IterableDataset):
         self._fetch_every = fetch_every
         self._samples_since_last_fetch = fetch_every
         self._save_snapshot = save_snapshot
+        self._action_dim = action_dim
         self._storage = ReplayBufferStorage(replay_dir)
 
     def add(self, obs, action, reward, next_obs, done):
@@ -335,6 +336,11 @@ class DrQReplayBuffer(IterableDataset):
         idx = np.random.randint(0, episode_len(episode) - self._nstep + 1) + 1
         obs = episode['observation'][idx - 1]
         action = episode['action'][idx]
+        
+        if action.shape[-1] != self._action_dim:
+            print(f"[DrQReplayBuffer] Warning: Action dimension mismatch. Expected {self._action_dim}, got {action.shape[-1]}")
+            action = action[..., :self._action_dim]
+        
         next_obs = episode['observation'][idx + self._nstep - 1]
         reward = np.zeros_like(episode['reward'][idx])
         discount = np.ones_like(episode['discount'][idx])
@@ -345,7 +351,7 @@ class DrQReplayBuffer(IterableDataset):
         return (obs, action, reward, discount, next_obs)
 
     def __iter__(self):
-        last_warning_time = 0  # 控制警告输出频率
+        last_warning_time = 0  # 控制输出频率
         warning_interval = 1  # 秒
         
         while True:
@@ -357,10 +363,10 @@ class DrQReplayBuffer(IterableDataset):
                     if current_time - last_warning_time > warning_interval:
                         # print("[DrQReplayBuffer] No episodes available, waiting for data...")
                         last_warning_time = current_time
-                    # 返回一个全零的批次
+                    # 返回一个全零的批次，使用实际的动作维度
                     yield (
                         np.zeros((1, 9, 84, 84), dtype=np.uint8),  # obs
-                        np.zeros((1, 6), dtype=np.float32),        # action
+                        np.zeros((1, self._action_dim), dtype=np.float32),  # action
                         np.zeros(1, dtype=np.float32),             # reward
                         np.ones(1, dtype=np.float32),              # discount
                         np.zeros((1, 9, 84, 84), dtype=np.uint8)   # next_obs
@@ -374,7 +380,7 @@ class DrQReplayBuffer(IterableDataset):
                 self._try_fetch()
 
 def make_drq_replay_loader(replay_dir, max_size, batch_size, num_workers,
-                           save_snapshot, nstep, discount):
+                           save_snapshot, nstep, discount, action_dim):
     iterable = DrQReplayBuffer(
         replay_dir=replay_dir,
         max_size=max_size,
@@ -382,7 +388,8 @@ def make_drq_replay_loader(replay_dir, max_size, batch_size, num_workers,
         nstep=nstep,
         discount=discount,
         fetch_every=1000,
-        save_snapshot=save_snapshot
+        save_snapshot=save_snapshot,
+        action_dim=action_dim
     )
     
     loader = torch.utils.data.DataLoader(
@@ -437,16 +444,25 @@ class DrQV2OffAgent:
         self.num_seed_frames = num_seed_frames
         self.action_repeat = action_repeat
 
+        if isinstance(action_shape, (tuple, list)):
+            self.action_shape = tuple(action_shape)
+        elif isinstance(action_shape, np.ndarray):
+            self.action_shape = tuple(action_shape.shape)
+        else:
+            self.action_shape = (action_shape,)
+        print(f"[DrQV2Off] Original action_shape: {action_shape}")
+        print(f"[DrQV2Off] Using action_shape: {self.action_shape}")
+
         self.encoder = Encoder(obs_shape).to(device)
         self.actor = Actor(
-            self.encoder.repr_dim, action_shape, feature_dim, hidden_dim
+            self.encoder.repr_dim, self.action_shape, feature_dim, hidden_dim
         ).to(device)
 
         self.critic = Critic(
-            self.encoder.repr_dim, action_shape, feature_dim, hidden_dim
+            self.encoder.repr_dim, self.action_shape, feature_dim, hidden_dim
         ).to(device)
         self.critic_target = Critic(
-            self.encoder.repr_dim, action_shape, feature_dim, hidden_dim
+            self.encoder.repr_dim, self.action_shape, feature_dim, hidden_dim
         ).to(device)
         self.critic_target.load_state_dict(self.critic.state_dict())
 
@@ -576,14 +592,8 @@ class DrQV2OffAgent:
             batch = next(replay_iter)
             obs, action, reward, discount, next_obs = batch
             
-            # # 4. 打印调试信息（每1000步打印一次）
-            # if step % 1000 == 0:
-            #     print(f"[DrQV2Off] Step {step} - Batch shapes:")
-            #     print(f"- obs: {obs.shape}")
-            #     print(f"- action: {action.shape}")
-            #     print(f"- reward: {reward.shape}")
-            #     print(f"- discount: {discount.shape}")
-            #     print(f"- next_obs: {next_obs.shape}")
+            if step % 5000 == 0:
+                print(f"[DrQV2Off] Action shape in batch: {action.shape}")
             
             # 检查数据是否是空的占位数据
             if isinstance(obs, np.ndarray) and obs.size > 0:
@@ -608,12 +618,6 @@ class DrQV2OffAgent:
             obs = obs.squeeze(1)
             action = action.squeeze(1)
             next_obs = next_obs.squeeze(1)
-            
-            # if step % 1000 == 0:
-            #     print(f"After squeeze - Batch shapes:")
-            #     print(f"- obs: {obs.shape}")
-            #     print(f"- action: {action.shape}")
-            #     print(f"- next_obs: {next_obs.shape}")
             
             obs = self.aug(obs)
             next_obs = self.aug(next_obs)
