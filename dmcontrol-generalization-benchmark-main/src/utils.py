@@ -14,6 +14,9 @@ from PIL import ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 import torch.distributions as pyd
 from torch.distributions.utils import _standard_normal
+import time
+import torch.nn as nn
+import torch.nn.functional as F
 
 places_dataloader = None
 places_iter = None
@@ -21,19 +24,35 @@ places_iter = None
 
 def schedule(schedule_str, step):
     """
-    linear(a,b,n) 从a线性衰减到b，用时n步
-    常数值 直接返回该数值
+    调度模式：
+    常数值: 直接返回该数值
+    linear(a,b,n): 从a线性变化到b，用时n步
+    step_linear(init,final1,duration1,final2,duration2): 两段式线性变化
     """
     try:
         return float(schedule_str)
     except ValueError:
+        # 原始linear模式
         match = re.match(r'linear\(([\d.]+),([\d.]+),(\d+)\)', schedule_str)
         if match:
             start, end, duration = [float(g) for g in match.groups()]
-            mix = min(1.0, step / duration)
+            mix = np.clip(step / duration, 0.0, 1.0)
             return start + (end - start) * mix
-        else:
-            raise ValueError(f'Invalid schedule format: {schedule_str}')
+            
+        # step_linear模式
+        match = re.match(r'step_linear\((.+),(.+),(.+),(.+),(.+)\)', schedule_str)
+        if match:
+            init, final1, duration1, final2, duration2 = [
+                float(g) for g in match.groups()
+            ]
+            if step <= duration1:
+                mix = np.clip(step / duration1, 0.0, 1.0)
+                return (1.0 - mix) * init + mix * final1
+            else:
+                mix = np.clip((step - duration1) / duration2, 0.0, 1.0)
+                return (1.0 - mix) * final1 + mix * final2
+                
+        raise ValueError(f'Invalid schedule format: {schedule_str}')
 
 
 class eval_mode(object):
@@ -382,3 +401,60 @@ class TruncatedNormal(pyd.Normal):
             eps = torch.clamp(eps, -clip, clip)
         x = self.loc + eps
         return self._clamp(x)
+
+
+class Timer:
+    def __init__(self):
+        self._start_time = time.time()
+        self._last_time = time.time()
+
+    def reset(self):
+        elapsed_time = time.time() - self._last_time
+        self._last_time = time.time()
+        total_time = time.time() - self._start_time
+        return elapsed_time, total_time
+
+    def total_time(self):
+        return time.time() - self._start_time
+
+
+class Until:
+    def __init__(self, until, action_repeat=1):
+        self._until = until
+        self._action_repeat = action_repeat
+
+    def __call__(self, step):
+        if self._until is None:
+            return True
+        until = self._until // self._action_repeat
+        return step < until
+
+
+class Every:
+    def __init__(self, every, action_repeat=1):
+        self._every = every
+        self._action_repeat = action_repeat
+
+    def __call__(self, step):
+        if self._every is None:
+            return False
+        every = self._every // self._action_repeat
+        if step % every == 0:
+            return True
+        return False
+
+
+def weight_init(m):
+    if isinstance(m, nn.Linear):
+        nn.init.orthogonal_(m.weight.data)
+        if hasattr(m.bias, 'data'):
+            m.bias.data.fill_(0.0)
+    elif isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+        gain = nn.init.calculate_gain('relu')
+        nn.init.orthogonal_(m.weight.data, gain)
+        if hasattr(m.bias, 'data'):
+            m.bias.data.fill_(0.0)
+
+
+def to_torch(xs, device):
+    return tuple(torch.as_tensor(x, device=device) for x in xs)
