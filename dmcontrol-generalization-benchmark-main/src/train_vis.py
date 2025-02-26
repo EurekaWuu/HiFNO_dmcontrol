@@ -17,11 +17,13 @@ import cv2
 from collections import deque
 
 class VisualLogger:
-    def __init__(self, work_dir):
+    def __init__(self, work_dir, domain_name, task_name, algorithm, seed):
         self.writer = SummaryWriter(work_dir)
         self.episode_rewards = []
         self.eval_rewards = []
-        self.video_dir = os.path.join(work_dir, 'videos')
+        
+        
+        self.video_dir = os.path.join(work_dir, 'videos')  
         if not os.path.exists(self.video_dir):
             os.makedirs(self.video_dir)
         
@@ -59,7 +61,7 @@ class VisualLogger:
         
         # 写入帧
         for frame in frames:
-            # OpenCV使用BGR格式，需要从RGB转换
+            # OpenCV使用BGR格式，要从RGB转换
             frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             out.write(frame_bgr)
             
@@ -85,7 +87,7 @@ def evaluate(env, agent, video, num_episodes, L, visual_logger, step, test_env=F
             
             obs, reward, done, _ = env.step(action)
             frame = env.render(mode='rgb_array')
-            visual_logger.add_frame(frame)  # 添加帧到缓冲区
+            visual_logger.add_frame(frame)  
             video.record(env)
             episode_reward += reward
 
@@ -131,7 +133,7 @@ def main(args):
     test_env = make_env(
         domain_name=args.domain_name,
         task_name=args.task_name,
-        seed=args.seed+42,
+        seed=args.seed + 42,
         episode_length=args.episode_length,
         action_repeat=args.action_repeat,
         image_size=args.image_size,
@@ -139,18 +141,20 @@ def main(args):
         intensity=args.distracting_cs_intensity
     ) if args.eval_mode is not None else None
 
-    # Create working directory
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    work_dir = os.path.join(args.log_dir, args.domain_name+'_'+args.task_name, 
-                           args.algorithm, str(args.seed), timestamp)
+    # Create working directory with timestamp
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')  # 生成时间戳
+    work_dir = f'/mnt/lustre/GPU4/home/wuhanpeng/dmcontrol/videos/{args.domain_name}_{args.task_name}/{args.algorithm}/{args.seed}/{timestamp}'
     print('Working directory:', work_dir)
     utils.make_dir(work_dir)
     model_dir = utils.make_dir(os.path.join(work_dir, 'model'))
     video_dir = utils.make_dir(os.path.join(work_dir, 'video'))
+        
+    
+    video_dir = work_dir
     video = VideoRecorder(video_dir if args.save_video else None)
 
     # 初始化可视化工具
-    visual_logger = VisualLogger(work_dir)
+    visual_logger = VisualLogger(work_dir, args.domain_name, args.task_name, args.algorithm, args.seed)
 
     # Prepare agent
     assert torch.cuda.is_available(), 'must have cuda enabled'
@@ -171,15 +175,16 @@ def main(args):
 
     start_step, episode, episode_reward, done = 0, 0, 0, True
     L = Logger(work_dir)
-    start_time = time.time()
+    start_time = time.time()  
     last_video_save = 0
     
     for step in range(start_step, args.train_steps+1):
         if done:
             if step > start_step:
                 duration = time.time() - start_time
-                visual_logger.log_training_metrics(episode_reward, step, duration)
+                L.log('train/duration', duration, step)
                 start_time = time.time()
+                visual_logger.log_training_metrics(episode_reward, step, duration)
                 L.dump(step)
 
             # Evaluate agent periodically
@@ -235,7 +240,7 @@ def main(args):
                                          step)
             visual_logger.add_frame(frame)
             
-            # 每1000步保存一次视频
+            # 每50000步保存一次视频
             if step - last_video_save >= 50000:
                 visual_logger.save_video(step)
                 last_video_save = step
@@ -244,5 +249,21 @@ def main(args):
 
 if __name__ == '__main__':
     args = parse_args()
-    args.render_freq = 50  # 默认每50步渲染一次
+    args.render_freq = 50  # 每50步渲染一次
     main(args)
+
+
+"""
+
+CUDA_VISIBLE_DEVICES=5 python train_vis.py --domain_name walker --task_name stand --algorithm svea --seed 42 --save_video
+
+
+CUDA_VISIBLE_DEVICES=4 python train_vis.py --domain_name walker --task_name walk --algorithm svea --seed 42 --save_video
+
+
+CUDA_VISIBLE_DEVICES=3 python train_vis.py --domain_name walker --task_name run --algorithm svea --seed 42 --save_video
+
+
+CUDA_VISIBLE_DEVICES=2 python train_vis.py --domain_name quadruped --task_name walk --algorithm svea --seed 42 --save_video
+
+"""
