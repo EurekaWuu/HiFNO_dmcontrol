@@ -1,36 +1,64 @@
-import io
-import numpy as np
+# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 import datetime
-from collections import defaultdict
-from torch.utils.data import IterableDataset
-import torch
+import io
 import random
-import time
 import traceback
+from collections import defaultdict
+
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.utils.data import IterableDataset
+
+
+def episode_len(episode):
+    # subtract -1 because the dummy first transition
+    return next(iter(episode.values())).shape[0] - 1
+
+
+def save_episode(episode, fn):
+    with io.BytesIO() as bs:
+        np.savez_compressed(bs, **episode)
+        bs.seek(0)
+        with fn.open('wb') as f:
+            f.write(bs.read())
+
+
+def load_episode(fn):
+    with fn.open('rb') as f:
+        episode = np.load(f)
+        episode = {k: episode[k] for k in episode.keys()}
+        return episode
+
 
 class ReplayBufferStorage:
-    def __init__(self, replay_dir):
+    def __init__(self, data_specs, replay_dir):
+        self._data_specs = data_specs
         self._replay_dir = replay_dir
         replay_dir.mkdir(exist_ok=True)
         self._current_episode = defaultdict(list)
         self._preload()
 
-    def add(self, obs, action, reward, next_obs, done):
-        self._current_episode['observation'].append(obs)
-        self._current_episode['action'].append(action)
-        self._current_episode['reward'].append(reward)
-        self._current_episode['discount'].append(1.0 - done)
-        
-        if done:
+    def __len__(self):
+        return self._num_transitions
+
+    def add(self, time_step):
+        for spec in self._data_specs:
+            value = time_step[spec.name]
+            if np.isscalar(value):
+                value = np.full(spec.shape, value, spec.dtype)
+            assert spec.shape == value.shape and spec.dtype == value.dtype
+            self._current_episode[spec.name].append(value)
+        if time_step.last():
             episode = dict()
-            for k, v in self._current_episode.items():
-                episode[k] = np.array(v)
-            episode['observation'] = np.concatenate([
-                episode['observation'], 
-                next_obs[None]], axis=0)
-            
-            self._store_episode(episode)
+            for spec in self._data_specs:
+                value = self._current_episode[spec.name]
+                episode[spec.name] = np.array(value, spec.dtype)
             self._current_episode = defaultdict(list)
+            self._store_episode(episode)
 
     def _preload(self):
         self._num_episodes = 0
@@ -50,7 +78,7 @@ class ReplayBufferStorage:
         save_episode(episode, self._replay_dir / eps_fn)
 
 
-class DrQReplayBuffer(IterableDataset):
+class ReplayBuffer(IterableDataset):
     def __init__(self, replay_dir, max_size, num_workers, nstep, discount,
                  fetch_every, save_snapshot):
         self._replay_dir = replay_dir
@@ -64,32 +92,6 @@ class DrQReplayBuffer(IterableDataset):
         self._fetch_every = fetch_every
         self._samples_since_last_fetch = fetch_every
         self._save_snapshot = save_snapshot
-        self._storage = ReplayBufferStorage(replay_dir)
-
-    def add(self, obs, action, reward, next_obs, done):
-        self._storage.add(obs, action, reward, next_obs, done)
-
-    def _try_fetch(self):
-        if self._samples_since_last_fetch < self._fetch_every:
-            return
-        self._samples_since_last_fetch = 0
-        try:
-            worker_id = torch.utils.data.get_worker_info().id
-        except:
-            worker_id = 0
-        eps_fns = sorted(self._replay_dir.glob('*.npz'), reverse=True)
-        fetched_size = 0
-        for eps_fn in eps_fns:
-            eps_idx, eps_len = [int(x) for x in eps_fn.stem.split('_')[1:]]
-            if eps_idx % self._num_workers != worker_id:
-                continue
-            if eps_fn in self._episodes.keys():
-                break
-            if fetched_size + eps_len > self._max_size:
-                break
-            fetched_size += eps_len
-            if not self._store_episode(eps_fn):
-                break
 
     def _sample_episode(self):
         eps_fn = random.choice(self._episode_fns)
@@ -115,6 +117,28 @@ class DrQReplayBuffer(IterableDataset):
             eps_fn.unlink(missing_ok=True)
         return True
 
+    def _try_fetch(self):
+        if self._samples_since_last_fetch < self._fetch_every:
+            return
+        self._samples_since_last_fetch = 0
+        try:
+            worker_id = torch.utils.data.get_worker_info().id
+        except:
+            worker_id = 0
+        eps_fns = sorted(self._replay_dir.glob('*.npz'), reverse=True)
+        fetched_size = 0
+        for eps_fn in eps_fns:
+            eps_idx, eps_len = [int(x) for x in eps_fn.stem.split('_')[1:]]
+            if eps_idx % self._num_workers != worker_id:
+                continue
+            if eps_fn in self._episodes.keys():
+                break
+            if fetched_size + eps_len > self._max_size:
+                break
+            fetched_size += eps_len
+            if not self._store_episode(eps_fn):
+                break
+
     def _sample(self):
         try:
             self._try_fetch()
@@ -136,79 +160,31 @@ class DrQReplayBuffer(IterableDataset):
         return (obs, action, reward, discount, next_obs)
 
     def __iter__(self):
-        last_warning_time = 0  # 控制警告输出频率
-        warning_interval = 1  # 秒
-        
         while True:
-            # 确保有数据可用
-            if not self._episode_fns:
-                self._try_fetch()
-                if not self._episode_fns:  
-                    current_time = time.time()
-                    if current_time - last_warning_time > warning_interval:
-                        # print("[DrQReplayBuffer] No episodes available, waiting for data...")
-                        last_warning_time = current_time
-                    # 返回一个全零的批次
-                    yield (
-                        np.zeros((1, 9, 84, 84), dtype=np.uint8),  # obs
-                        np.zeros((1, 6), dtype=np.float32),        # action
-                        np.zeros(1, dtype=np.float32),             # reward
-                        np.ones(1, dtype=np.float32),              # discount
-                        np.zeros((1, 9, 84, 84), dtype=np.uint8)   # next_obs
-                    )
-                    continue
-            
-            try:
-                yield self._sample()
-            except Exception as e:
-                print(f"[DrQReplayBuffer] Error in sampling: {str(e)}")
-                self._try_fetch()
+            yield self._sample()
 
-def make_drq_replay_loader(replay_dir, max_size, batch_size, num_workers,
-                           save_snapshot, nstep, discount):
-    iterable = DrQReplayBuffer(
-        replay_dir=replay_dir,
-        max_size=max_size,
-        num_workers=num_workers,
-        nstep=nstep,
-        discount=discount,
-        fetch_every=1000,
-        save_snapshot=save_snapshot
-    )
-    
-    loader = torch.utils.data.DataLoader(
-        iterable,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        pin_memory=True,
-        worker_init_fn=None
-    )
+
+def _worker_init_fn(worker_id):
+    seed = np.random.get_state()[1][0] + worker_id
+    np.random.seed(seed)
+    random.seed(seed)
+
+
+def make_replay_loader(replay_dir, max_size, batch_size, num_workers,
+                       save_snapshot, nstep, discount):
+    max_size_per_worker = max_size // max(1, num_workers)
+
+    iterable = ReplayBuffer(replay_dir,
+                            max_size_per_worker,
+                            num_workers,
+                            nstep,
+                            discount,
+                            fetch_every=1000,
+                            save_snapshot=save_snapshot)
+
+    loader = torch.utils.data.DataLoader(iterable,
+                                         batch_size=batch_size,
+                                         num_workers=num_workers,
+                                         pin_memory=True,
+                                         worker_init_fn=_worker_init_fn)
     return loader
-
-
-class Until:
-    def __init__(self, until, action_repeat=1):
-        self._until = until
-        self._action_repeat = action_repeat
-
-    def __call__(self, step):
-        if self._until is None:
-            return True
-        until = self._until // self._action_repeat
-        return step < until
-
-def episode_len(episode):
-    return next(iter(episode.values())).shape[0] - 1
-
-def save_episode(episode, fn):
-    with io.BytesIO() as bs:
-        np.savez_compressed(bs, **episode)
-        bs.seek(0)
-        with fn.open('wb') as f:
-            f.write(bs.read())
-
-def load_episode(fn):
-    with fn.open('rb') as f:
-        episode = np.load(f)
-        episode = {k: episode[k] for k in episode.keys()}
-        return episode
