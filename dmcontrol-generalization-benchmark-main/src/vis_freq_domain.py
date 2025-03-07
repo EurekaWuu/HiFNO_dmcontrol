@@ -240,7 +240,7 @@ if __name__ == "__main__":
 
 '''
 
-python /mnt/lustre/GPU4/home/wuhanpeng/dmcontrol-generalization-benchmark-main/dmcontrol-generalization-benchmark-main/src/vis_freq_domain.py
+python /mnt/lustre/GPU4/home/wuhanpeng/dmcontrol/src/vis_freq_domain.py
 
 
 '''
