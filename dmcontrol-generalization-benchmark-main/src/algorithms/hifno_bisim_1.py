@@ -292,7 +292,9 @@ class HiFNOBisimAgent(SAC):
         self.bisim_loss_fn = BisimulationLoss(
             lambda_SC=getattr(args, 'lambda_SC', 0.5),
             lambda_clip=getattr(args, 'lambda_clip', 0.5),
-            p=getattr(args, 'bisim_p', 2)
+            p=getattr(args, 'bisim_p', 2),
+            use_sc_loss=getattr(args, 'use_sc_loss', True),
+            use_clip_bisim_loss=getattr(args, 'use_clip_bisim_loss', True)
         )
         
         # 初始化CLIP分类器

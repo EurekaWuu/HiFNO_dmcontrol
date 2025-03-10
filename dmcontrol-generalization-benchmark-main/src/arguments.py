@@ -1,7 +1,7 @@
 import argparse
 import numpy as np
 import os
-
+import utils
 
 def parse_args():
 	parser = argparse.ArgumentParser()
@@ -121,6 +121,11 @@ def parse_args():
 						help='Overall CLIP loss weight')
 	parser.add_argument('--use_clip_guided_bisim', type=bool, default=True,
 						help='Whether to use CLIP guided bisimulation loss')
+
+	parser.add_argument('--use_sc_loss', type=utils.str2bool, default=True,
+						help='是否使用语义类内一致性损失')
+	parser.add_argument('--use_clip_bisim_loss', type=utils.str2bool, default=True,
+						help='是否使用CLIP引导的双模拟损失')
 
 	args = parser.parse_args()
 

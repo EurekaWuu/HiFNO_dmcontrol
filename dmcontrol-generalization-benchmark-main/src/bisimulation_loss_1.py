@@ -3,14 +3,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class BisimulationLoss(nn.Module):
-    def __init__(self, lambda_SC=0.5, lambda_clip=0.5, p=2):
+    def __init__(self, lambda_SC=0.5, lambda_clip=0.5, p=2, use_sc_loss=True, use_clip_bisim_loss=True):
         super().__init__()
         self.lambda_SC = lambda_SC
         self.lambda_clip = lambda_clip
         self.p = p
+        self.use_sc_loss = use_sc_loss  # 是否使用语义类内一致性损失
+        self.use_clip_bisim_loss = use_clip_bisim_loss  # 是否使用CLIP引导的双模拟损失
 
     def compute_semantic_class_loss(self, state_features, actions, class_labels):
-
+        if not self.use_sc_loss:
+            return torch.tensor(0.0, device=state_features.device)
+            
         batch_size = state_features.size(0)
         unique_classes = torch.unique(class_labels)
         
@@ -51,6 +55,8 @@ class BisimulationLoss(nn.Module):
         return sc_loss
     
     def compute_clip_guided_bisim_loss(self, state_features, actions, clip_similarities, clip_class_indices=None):
+        if not self.use_clip_bisim_loss:
+            return torch.tensor(0.0, device=state_features.device)
 
         batch_size = state_features.size(0)
         
@@ -86,6 +92,11 @@ class BisimulationLoss(nn.Module):
         # CLIP引导的双模拟损失
         clip_bisim_loss = self.compute_clip_guided_bisim_loss(state_features, actions, clip_similarities)
 
-        total_loss = self.lambda_SC * sc_loss + self.lambda_clip * clip_bisim_loss
+
+        total_loss = 0.0
+        if self.use_sc_loss:
+            total_loss += self.lambda_SC * sc_loss
+        if self.use_clip_bisim_loss:
+            total_loss += self.lambda_clip * clip_bisim_loss
 
         return total_loss, (sc_loss, clip_bisim_loss)
