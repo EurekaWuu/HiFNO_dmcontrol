@@ -74,12 +74,23 @@ def main(args):
 
 	# Prepare agent
 	assert torch.cuda.is_available(), 'must have cuda enabled'
+	torch.cuda.empty_cache()  # 清理GPU缓存
+	
 	if args.algorithm == 'hifno_bisim':
 		replay_buffer = utils.BisimReplayBuffer(
 			obs_shape=env.observation_space.shape,
 			action_shape=env.action_space.shape,
 			capacity=args.train_steps,
 			batch_size=args.batch_size * 2
+		)
+	elif args.algorithm == 'hifno_bisim_1':
+		# hifno_bisim_1设置较小的batch_size
+		os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512'
+		replay_buffer = utils.BisimReplayBuffer(
+			obs_shape=env.observation_space.shape,
+			action_shape=env.action_space.shape,
+			capacity=args.train_steps,
+			batch_size=16
 		)
 	else:
 		replay_buffer = utils.ReplayBuffer(
@@ -147,6 +158,11 @@ def main(args):
 					L.log('train/L_BB', update_info.get('L_BB', 0), step)
 					L.log('train/L_ICC', update_info.get('L_ICC', 0), step)
 					L.log('train/L_CC', update_info.get('L_CC', 0), step)
+				elif args.algorithm == 'hifno_bisim_1' and L is not None:
+					L.log('train/clip_loss', update_info.get('clip_loss', 0), step)
+					L.log('train/sc_loss', update_info.get('sc_loss', 0), step)
+					L.log('train/clip_bisim_loss', update_info.get('clip_bisim_loss', 0), step)
+					L.log('train/total_loss', update_info.get('total_loss', 0), step)
 
 		# Take step
 		next_obs, reward, done, _ = env.step(action)
@@ -168,5 +184,6 @@ if __name__ == '__main__':
 '''
 CUDA_VISIBLE_DEVICES=3 python train_hifno.py --algorithm hifno --hidden_dim 128 --domain_name walker --task_name walk --seed 1 --lr 1e-4 --embed_dim 256 --batch_size 32
 CUDA_VISIBLE_DEVICES=6 python train_hifno.py --algorithm hifno_bisim --hidden_dim 128 --domain_name walker --task_name walk --seed 1 --lr 1e-4 --embed_dim 256 --batch_size 32
+CUDA_VISIBLE_DEVICES=7 python train_hifno.py --algorithm hifno_bisim_1 --hidden_dim 96 --domain_name walker --task_name walk --seed 1 --lr 1e-4 --embed_dim 96 --batch_size 16 --lambda_SC 0.5 --lambda_clip 0.5 --clip_loss_weight 0.5
 
 '''

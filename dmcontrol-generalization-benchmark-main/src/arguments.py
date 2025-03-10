@@ -112,11 +112,21 @@ def parse_args():
 	parser.add_argument('--num_seed_frames', default=4000, type=int,
 						help='Number of frames to collect before training（用于drqv2_official）')
 
+	# hifno_bisim_1
+	parser.add_argument('--lambda_SC', type=float, default=0.5,
+						help='Semantic Consistency loss weight')
+	parser.add_argument('--lambda_clip', type=float, default=0.5,
+						help='CLIP guided loss weight')
+	parser.add_argument('--clip_loss_weight', type=float, default=0.5,
+						help='Overall CLIP loss weight')
+	parser.add_argument('--use_clip_guided_bisim', type=bool, default=True,
+						help='Whether to use CLIP guided bisimulation loss')
+
 	args = parser.parse_args()
 
 	assert args.algorithm in {
 		'sac', 'rad', 'curl', 'pad', 'soda', 'drq', 'drqv2', 'drqv2_notem', 'drqv2_official',
-		'svea', 'hifno', 'hifno_multigpu', 'hifno_bisim', 'pieg'
+		'svea', 'hifno', 'hifno_multigpu', 'hifno_bisim', 'hifno_bisim_1', 'pieg'
 	}, f'specified algorithm "{args.algorithm}" is not supported'
 
 	assert args.eval_mode in {'train', 'color_easy', 'color_hard', 'video_easy', 'video_hard', 'distracting_cs', 'none'}, f'specified mode "{args.eval_mode}" is not supported'

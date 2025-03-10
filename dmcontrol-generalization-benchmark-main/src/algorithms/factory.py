@@ -10,6 +10,7 @@ from algorithms.drqv2_official import DrQV2OffAgent
 from algorithms.svea import SVEA
 from algorithms.hifno import HiFNOAgent
 from algorithms.hifno_bisim import HiFNOBisimAgent
+from algorithms.hifno_bisim_1 import HiFNOBisimAgent as HiFNOBisimAgent1
 from algorithms.svea_vis import SVEA_VIS
 from algorithms.pieg import PIEG
 
@@ -26,6 +27,7 @@ algorithm = {
 	'svea': SVEA,
 	'hifno': HiFNOAgent,
 	'hifno_bisim': HiFNOBisimAgent,
+	'hifno_bisim_1': HiFNOBisimAgent1,
 	'svea_vis': SVEA_VIS,
 	'pieg': PIEG
 }
@@ -40,6 +42,12 @@ def make_agent(obs_shape, action_shape, args):
 		)
 	elif args.algorithm == 'hifno_bisim':
 		return HiFNOBisimAgent(
+			obs_shape=obs_shape,
+			action_shape=action_shape,
+			args=args
+		)
+	elif args.algorithm == 'hifno_bisim_1':
+		return HiFNOBisimAgent1(
 			obs_shape=obs_shape,
 			action_shape=action_shape,
 			args=args
