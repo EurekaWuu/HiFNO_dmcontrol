@@ -22,6 +22,18 @@ import torch.distributed as dist
 import clip
 from torchvision import transforms
 
+
+_clip_model = None
+_clip_preprocess = None
+
+def get_clip_model(device):
+    global _clip_model, _clip_preprocess
+    if _clip_model is None:
+        import clip
+        _clip_model, _clip_preprocess = clip.load("ViT-B/32", device=device)
+        _clip_model = _clip_model.float()
+    return _clip_model, _clip_preprocess
+
 class HiFNOEncoder(nn.Module):
     def __init__(self, obs_shape, feature_dim, args):
         super().__init__()
@@ -109,10 +121,7 @@ class CLIPClassifier:
     def __init__(self, descriptions, device):
         self.device = device
         
-        self.model, self.preprocess = clip.load("ViT-B/32", device=self.device)
-        
-        # 设置模型为float32类型
-        self.model = self.model.float()
+        self.model, self.preprocess = get_clip_model(device)
         
         self.descriptions = descriptions
         # 对所有描述进行编码
@@ -271,51 +280,26 @@ class HiFNOBisimAgent(SAC, nn.Module):
         self.clip_loss_weight = getattr(args, 'clip_loss_weight', 0.5)
 
     def compute_clip_guided_loss(self, obs, actions):
-        batch_size = obs.shape[0]
-        sub_batch_size = 4  
-        
-
+        """计算CLIP引导的损失，使用整个批次一次性处理"""
         device = next(self.parameters()).device
         
 
         if not hasattr(self, 'clip_classifier'):
             self.clip_classifier = CLIPClassifier(self.descriptions, device=device)
         
-        all_state_features = []
-        all_class_indices = []
-        all_similarities = []
+
+        with torch.cuda.amp.autocast(enabled=True):  # 启用混合精度
+            state_features = self.encoder(obs)
         
-
-        for i in range(0, batch_size, sub_batch_size):
-
-            torch.cuda.empty_cache()
-            
-            end_idx = min(i + sub_batch_size, batch_size)
-            sub_obs = obs[i:end_idx]
-            
-            # 提取状态特征
-            with torch.cuda.amp.autocast(enabled=False):  # 禁用混合精度
-                state_features = self.encoder(sub_obs)
-                all_state_features.append(state_features)
-            
-            # 获取最后一帧作为当前状态
-            if sub_obs.shape[1] > 3:  # 如果是堆叠的帧
-                frame_size = sub_obs.shape[1] // self.args.frame_stack
-                current_frame = sub_obs[:, -frame_size:].clone()
-            else:
-                current_frame = sub_obs.clone()
-            
-
-            torch.cuda.empty_cache()  # 每个子批次后清理缓存
-            class_indices, similarities = self.clip_classifier.batch_classify_states(current_frame)
-            
-            all_class_indices.append(class_indices)
-            all_similarities.append(similarities)
+        # 获取最后一帧作为当前状态
+        if obs.shape[1] > 3:  # 如果是堆叠的帧
+            frame_size = obs.shape[1] // self.args.frame_stack
+            current_frame = obs[:, -frame_size:].clone()
+        else:
+            current_frame = obs.clone()
         
-        # 合并结果
-        state_features = torch.cat(all_state_features, dim=0)
-        class_indices = torch.cat(all_class_indices, dim=0)
-        similarities = torch.cat(all_similarities, dim=0)
+        # 使用CLIP分类器对状态进行分类
+        class_indices, similarities = self.clip_classifier.batch_classify_states(current_frame)
         
         total_loss, (sc_loss, clip_bisim_loss) = self.bisim_loss_fn.compute_total_loss(
             state_features, actions, similarities, class_indices
