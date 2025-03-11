@@ -131,7 +131,7 @@ def parse_args():
 
 	assert args.algorithm in {
 		'sac', 'rad', 'curl', 'pad', 'soda', 'drq', 'drqv2', 'drqv2_notem', 'drqv2_official',
-		'svea', 'hifno', 'hifno_multigpu', 'hifno_bisim', 'hifno_bisim_1', 'pieg'
+		'svea', 'hifno', 'hifno_multigpu', 'hifno_bisim', 'hifno_bisim_1', 'hifno_bisim_1_multigpu', 'pieg'
 	}, f'specified algorithm "{args.algorithm}" is not supported'
 
 	assert args.eval_mode in {'train', 'color_easy', 'color_hard', 'video_easy', 'video_hard', 'distracting_cs', 'none'}, f'specified mode "{args.eval_mode}" is not supported'

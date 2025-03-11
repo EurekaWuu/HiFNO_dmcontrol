@@ -13,6 +13,7 @@ from logger import Logger
 from video import VideoRecorder
 from datetime import datetime
 from algorithms.hifno_multigpu import HiFNOAgent
+from algorithms.hifno_bisim_1_multigpu import HiFNOBisimAgent
 from torch import nn
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
