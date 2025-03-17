@@ -13,6 +13,7 @@ import argparse
 from datetime import datetime
 from sklearn.manifold import TSNE
 import cv2
+from collections import defaultdict
 
 
 try:
@@ -22,15 +23,49 @@ except ImportError:
     make_env = None
 
 class WalkerStateVisualizer:
-    def __init__(self, descriptions=None, fps=30, frames_per_segment=100):
+    def __init__(self, descriptions=None, fps=30, frames_per_segment=100, temperature=1.0):
         self.fps = fps
         self.frames_per_segment = frames_per_segment
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model, self.preprocess = clip.load("ViT-B/32", device=self.device)
+        self.temperature = temperature
         
-        self.descriptions = descriptions if descriptions is not None else get_hifno_descriptions()
+
+        if descriptions is not None:
+            self.descriptions = descriptions
+            self.class_map = {} 
             
-        text_inputs = torch.cat([clip.tokenize(desc) for desc in self.descriptions]).to(self.device)
+
+            if isinstance(descriptions[0], list):
+                text_inputs_list = []
+                idx = 0
+                for class_idx, desc_list in enumerate(descriptions):
+                    for desc in desc_list:
+                        text_inputs_list.append(clip.tokenize(desc).to(self.device))
+                        self.class_map[idx] = class_idx
+                        idx += 1
+                text_inputs = torch.cat(text_inputs_list)
+                
+
+                self.display_descriptions = [desc_list[0] for desc_list in descriptions]
+            else:
+                text_inputs = torch.cat([clip.tokenize(desc) for desc in descriptions]).to(self.device)
+                self.display_descriptions = descriptions
+                for i in range(len(descriptions)):
+                    self.class_map[i] = i
+        else:
+            descriptions = get_hifno_descriptions()
+            if isinstance(descriptions[0], list):
+                self.descriptions = descriptions
+                self.display_descriptions = [desc_list[0] for desc_list in descriptions]
+            else:
+                self.descriptions = descriptions
+                self.display_descriptions = descriptions
+            
+            text_inputs = torch.cat([clip.tokenize(desc) if not isinstance(desc, list) else 
+                                    clip.tokenize(desc[0]) for desc in descriptions]).to(self.device)
+            self.class_map = {i: i for i in range(len(descriptions))}
+        
         with torch.no_grad():
             self.text_features = self.model.encode_text(text_inputs)
             self.text_features /= self.text_features.norm(dim=-1, keepdim=True)
@@ -151,110 +186,178 @@ class WalkerStateVisualizer:
     
     def preprocess_state(self, state):
 
+        if hasattr(state, '__array__'):
+
+            state = np.array(state)
+        
         if isinstance(state, np.ndarray):
             state = torch.FloatTensor(state)
             
-
         if state.shape[0] > 3:
             state = state[-3:]
             
-
         state = F.interpolate(state.unsqueeze(0), size=(224, 224), mode='bilinear', align_corners=False)[0]
         
-
         if state.max() > 1.0:
             state = state / 255.0
             
-
         state = transforms.Normalize((0.48145466, 0.4578275, 0.40821073),
                                      (0.26862954, 0.26130258, 0.27577711))(state)
         
         return state
     
-    def classify_state(self, state):
-
-        state_tensor = self.preprocess_state(state).to(self.device)
+    def classify_state(self, state, temperature=1.0, aggregation_method='max'):
+        processed_state = self.preprocess_state(state)
+        batch = torch.stack([processed_state]).to(self.device)
 
         with torch.no_grad():
 
-            image_features = self.model.encode_image(state_tensor.unsqueeze(0))
-            image_features /= image_features.norm(dim=-1, keepdim=True)
+            image_features = self.model.encode_image(batch)
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
             
 
-            similarity = (100.0 * image_features @ self.text_features.T).softmax(dim=-1)[0]
-            
+            similarities = (image_features @ self.text_features.T) / temperature
 
-        top_class = similarity.argmax().item()
-        
-        results = [(desc, conf.item()) for desc, conf in zip(self.descriptions, similarity)]
-        results.sort(key=lambda x: x[1], reverse=True)
-        
-        return top_class, results
-    
-    def visualize_classification(self, state, save_path=None):
 
-        top_class, results = self.classify_state(state)
-        
+            if hasattr(self, 'class_map') and isinstance(self.descriptions[0], list):
+                class_similarities = {}
+                for feat_idx, conf in enumerate(similarities[0]):
+                    class_idx = self.class_map[feat_idx]
+                    
 
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-        
+                    if class_idx not in class_similarities:
+                        class_similarities[class_idx] = []
+                        
 
-        if isinstance(state, torch.Tensor):
-            state_np = state.numpy()
-        else:
-            state_np = state
-            
+                    class_similarities[class_idx].append(conf.item())
+                
 
-        if state_np.shape[0] > 3:
-            display_state = state_np[-3:]
-        else:
-            display_state = state_np
-            
- 
-        display_state = np.transpose(display_state, (1, 2, 0))
-        if display_state.max() <= 1.0:
-            display_state = display_state * 255
-        display_state = display_state.astype(np.uint8)
-        
-        ax1.imshow(display_state)
-        ax1.set_title('Environment State')
-        ax1.axis('off')
-        
+                aggregated_similarities = {}
+                for cls, conf_list in class_similarities.items():
+                    if aggregation_method == 'max':
+                        # 使用最高置信度
+                        aggregated_similarities[cls] = max(conf_list)
+                    elif aggregation_method == 'mean':
+                        # 使用平均置信度
+                        aggregated_similarities[cls] = sum(conf_list) / len(conf_list)
+                    elif aggregation_method == 'sum':
+                        # 使用置信度总和
+                        aggregated_similarities[cls] = sum(conf_list)
+                    else:
+                        # 默认使用最高置信度
+                        aggregated_similarities[cls] = max(conf_list)
+                
 
-        confidences = [conf for _, conf in results]
-        
+                top_class = max(aggregated_similarities, key=aggregated_similarities.get)
+                
 
-        short_descriptions = []
-        for desc in [desc for desc, _ in results]:
-            if len(desc) > 30:
-                short_descriptions.append(desc[:30] + "...")
+                results = sorted(
+                    [(cls, conf) for cls, conf in aggregated_similarities.items()], 
+                    key=lambda x: x[1], 
+                    reverse=True
+                )
+                
+                return top_class, results
             else:
-                short_descriptions.append(desc)
-        
-        y_pos = np.arange(len(short_descriptions))
-        
-        ax2.barh(y_pos, confidences, color='skyblue')
-        ax2.set_yticks(y_pos)
-        ax2.set_yticklabels(short_descriptions)
-        ax2.set_xlabel('Confidence')
-        ax2.set_title('CLIP Classification Results')
-        
-
-        for i, v in enumerate(confidences):
-            ax2.text(v + 0.01, i, f"{v:.2f}", va='center')
-        
-        plt.tight_layout()
-        
-        if save_path:
-            plt.savefig(save_path)
-            plt.close()
-        else:
-            plt.show()
-            
-        return top_class, results
+                probs = similarities.squeeze().softmax(dim=0).cpu().numpy()
+                sorted_indices = np.argsort(-probs)
+                results = [(i, probs[i]) for i in sorted_indices]
+                return sorted_indices[0], results
     
-    def visualize_tsne(self, states, save_path=None):
-
+    def visualize_classification(self, state, save_path=None, aggregation_method='max'):
+        try:
+            if hasattr(state, 'copy'):
+                state_copy = state.copy()
+            elif hasattr(state, '__array__'):
+                state_copy = np.array(state)
+            else:
+                state_copy = state
+                
+            class_index, confidence_scores = self.classify_state(state_copy, self.temperature, aggregation_method)
+            
+            plt.figure(figsize=(12, 8))
+            
+            state_rgb = self.rgb_from_state(state)
+            plt.subplot(1, 2, 1)
+            plt.imshow(state_rgb)
+            plt.title("State Image")
+            plt.axis('off')
+            
+            plt.subplot(1, 2, 2)
+            
+            if hasattr(self, 'class_map') and isinstance(self.descriptions[0], list):
+                categories = []
+                confidence = []
+                
+                for cls_idx, conf in confidence_scores[:5]:  
+                    if cls_idx < len(self.display_descriptions):
+                        categories.append(self.display_descriptions[cls_idx])
+                        confidence.append(conf)
+                    else:
+                        categories.append(f"Unknown Class {cls_idx}")
+                        confidence.append(conf)
+                
+                top_class_name = self.display_descriptions[class_index] if class_index < len(self.display_descriptions) else f"Unknown Class {class_index}"
+                colors = ['green' if cat == top_class_name else 'gray' for cat in categories]
+                
+                bars = plt.barh(categories, confidence, color=colors)
+                plt.xlabel('Confidence')
+                plt.title(f'Classification Results (Using {aggregation_method} aggregation)')
+                
+                for bar, conf in zip(bars, confidence):
+                    plt.text(conf+0.01, bar.get_y()+bar.get_height()/2, f'{conf:.3f}', 
+                            va='center', ha='left', fontsize=10)
+            else:
+               
+                categories = []
+                confidence = []
+                
+                for desc_idx, conf in confidence_scores[:5]:  
+                    if isinstance(desc_idx, int) and desc_idx < len(self.display_descriptions):
+                        
+                        desc = self.display_descriptions[desc_idx]
+                        if len(desc) > 40:
+                            desc = desc[:40] + "..."
+                        categories.append(desc)
+                    else:
+                        categories.append(str(desc_idx))
+                    confidence.append(conf)
+                
+                
+                top_class_name = self.display_descriptions[class_index] if isinstance(class_index, int) and class_index < len(self.display_descriptions) else str(class_index)
+                colors = ['green' if i == 0 else 'gray' for i in range(len(categories))]
+                
+                
+                bars = plt.barh(categories, confidence, color=colors)
+                plt.xlabel('Confidence')
+                plt.title('Classification Results')
+                
+                
+                for bar, conf in zip(bars, confidence):
+                    plt.text(conf+0.01, bar.get_y()+bar.get_height()/2, f'{conf:.3f}', 
+                            va='center', ha='left', fontsize=10)
+            
+            plt.tight_layout()
+            
+            
+            if save_path:
+                plt.savefig(save_path)
+                plt.close()
+            else:
+                plt.show()
+                
+            return class_index, confidence_scores
+        except Exception as e:
+            print(f"可视化分类结果时出错: {e}")
+            if save_path:
+                plt.figure(figsize=(8, 6))
+                plt.text(0.5, 0.5, f"Error: {str(e)}", ha='center', va='center', fontsize=12)
+                plt.tight_layout()
+                plt.savefig(save_path)
+                plt.close()
+            return None, None
+    
+    def visualize_tsne(self, states, save_path=None, aggregation_method='max'):
         processed_states = []
         for state in states:
             processed_state = self.preprocess_state(state)
@@ -264,30 +367,85 @@ class WalkerStateVisualizer:
         batch = torch.stack(processed_states).to(self.device)
         
         with torch.no_grad():
+            # 计算图像特征
             features = self.model.encode_image(batch)
             features = features / features.norm(dim=-1, keepdim=True)
             
+            # 计算与文本特征的相似度
             similarities = features @ self.text_features.T
-            class_indices = similarities.argmax(dim=1).cpu().numpy()
             
+
+            if hasattr(self, 'class_map') and isinstance(self.descriptions[0], list):
+                
+                class_indices = []
+                for i in range(len(features)):
+                    
+                    sim = similarities[i]
+                    
+                    
+                    class_similarities = {}
+                    for feat_idx, conf in enumerate(sim):
+                        class_idx = self.class_map[feat_idx]
+                        
+                       
+                        if class_idx not in class_similarities:
+                            class_similarities[class_idx] = []
+                            
+                        
+                        class_similarities[class_idx].append(conf.item())
+                    
+
+                    aggregated_similarities = {}
+                    for cls, conf_list in class_similarities.items():
+                        if aggregation_method == 'max':
+                            # 使用最高置信度
+                            aggregated_similarities[cls] = max(conf_list)
+                        elif aggregation_method == 'mean':
+                            # 使用平均置信度
+                            aggregated_similarities[cls] = sum(conf_list) / len(conf_list)
+                        elif aggregation_method == 'sum':
+                            # 使用置信度总和
+                            aggregated_similarities[cls] = sum(conf_list)
+                        else:
+                            # 默认使用最高置信度
+                            aggregated_similarities[cls] = max(conf_list)
+                    
+
+                    top_class = max(aggregated_similarities, key=aggregated_similarities.get)
+                    class_indices.append(top_class)
+                
+                class_indices = np.array(class_indices)
+            else:
+
+                class_indices = similarities.argmax(dim=1).cpu().numpy()
+            
+
             features_np = features.cpu().numpy()
         
+   
         tsne = TSNE(n_components=2, random_state=42)
         features_2d = tsne.fit_transform(features_np)
         
+    
         plt.figure(figsize=(10, 8))
         
         unique_classes = np.unique(class_indices)
         colors = plt.cm.rainbow(np.linspace(0, 1, len(unique_classes)))
         
+    
         short_descriptions = {}
         for cls in unique_classes:
-            desc = self.descriptions[cls]
-            if len(desc) > 30:
-                short_descriptions[cls] = desc[:30] + "..."
+            if cls < len(self.display_descriptions):  
+                desc = self.display_descriptions[cls]
+                if len(desc) > 30:
+                    short_descriptions[cls] = desc[:30] + "..."
+                else:
+                    short_descriptions[cls] = desc
             else:
-                short_descriptions[cls] = desc
+
+                short_descriptions[cls] = f"Unknown Class {cls}"
         
+
         for i, cls in enumerate(unique_classes):
             mask = class_indices == cls
             plt.scatter(features_2d[mask, 0], features_2d[mask, 1], 
@@ -297,7 +455,6 @@ class WalkerStateVisualizer:
         plt.title("t-SNE Visualization of CLIP Features")
         plt.grid(alpha=0.3)
         
-
         if save_path:
             plt.savefig(save_path)
             plt.close()
@@ -306,8 +463,33 @@ class WalkerStateVisualizer:
             
         return features_2d, class_indices
 
-
-
+    def rgb_from_state(self, state):
+        # 处理LazyFrames对象
+        if hasattr(state, '__array__'):
+            state_np = np.array(state)
+        elif isinstance(state, torch.Tensor):
+            state_np = state.numpy()
+        else:
+            state_np = state
+            
+        # 提取RGB通道（如果有多个通道）
+        if state_np.shape[0] > 3:
+            display_state = state_np[-3:]
+        else:
+            display_state = state_np
+            
+        # 转换为HWC格式 (高度,宽度,通道)
+        if display_state.shape[0] == 3:
+            display_state = np.transpose(display_state, (1, 2, 0))
+            
+        # 归一化到0-255范围
+        if display_state.max() <= 1.0:
+            display_state = display_state * 255
+            
+        # 转换为uint8类型
+        display_state = display_state.astype(np.uint8)
+            
+        return display_state
 
 def parse_args():
     parser = argparse.ArgumentParser(description='CLIP State Classification Visualization Tool')
@@ -351,15 +533,46 @@ def parse_args():
     parser.add_argument('--render_size', type=int, default=256,
                         help='Size of rendered video (height and width)')
     
+    parser.add_argument('--temperature', type=float, default=1.0,
+                      help='Temperature for CLIP classification (lower values make predictions more confident)')
+    parser.add_argument('--use_multi_descriptions', action='store_true',
+                        help='Use multiple description variants for each class')
+    parser.add_argument('--aggregation_method', type=str, default='max',
+                      choices=['max', 'mean', 'sum'],
+                      help='Method to aggregate confidences from multiple descriptions per class')
+    
     return parser.parse_args()
 
 def get_hifno_descriptions():
-
     return [
-        "One leg is supporting on the ground while the other foot swings forward.",
-        "Both legs are supporting the ground.",
-        "The torso tilts, falling, lying on the ground, or kneeling, with significant loss of balance."
+        # 类别0: 行走姿势 (单腿支撑)
+        [
+            "WALKING POSITION: Robot has ONE leg on ground, with the OTHER leg clearly off ground and extended forward.",
+            "Single leg stance with one foot off the ground in mid-step.",
+            "Robot with one leg supporting body weight while the other leg is in the air.",
+            "Biped walker with asymmetric leg positions: one grounded, one suspended.",
+            "Robot in dynamic walking motion with one leg forward and one leg back."
+        ],
+        
+        # 类别1: 站立姿势 (双腿支撑)
+        [
+            "STANDING POSITION: Robot has BOTH legs firmly planted on ground with weight evenly distributed between them.",
+            "Double leg support with both feet touching the ground.",
+            "Balanced robot with two legs simultaneously in contact with the floor.",
+            "Stable stance with both legs supporting the body weight.",
+            "Robot standing with weight distributed equally on both legs."
+        ],
+        
+        # 类别2: 不稳定姿势
+        [
+            "UNSTABLE POSITION: Robot is tilting, falling, or lying on ground with significant loss of balance.",
+            "Robot in unstable posture about to fall or already fallen.",
+            "Biped walker losing balance with irregular body orientation.",
+            "Robot tipping over or collapsed on the ground.",
+            "Unbalanced position with robot unable to maintain upright posture."
+        ]
     ]
+
 
 
 
@@ -380,121 +593,127 @@ def get_save_dir(args):
     print(f"Results will be saved to: {save_dir}")
     return save_dir
 
-def create_reward_class_plot(states, rewards, visualizer, save_path):
+def create_reward_class_plot(states, rewards, visualizer, save_path, aggregation_method='max'):
+    class_counts = defaultdict(int)
+    class_rewards = defaultdict(list)
+    
+    classified_count = 0
+    for state, reward in zip(states, rewards):
+        try:
+            class_idx, _ = visualizer.classify_state(state, visualizer.temperature, aggregation_method)
+            
+            if hasattr(visualizer, 'display_descriptions') and class_idx < len(visualizer.display_descriptions):
+                class_name = visualizer.display_descriptions[class_idx]
+            else:
+                class_name = f"Class {class_idx}"
+                
+            class_counts[class_name] += 1
+            class_rewards[class_name].append(reward)
+            classified_count += 1
+        except Exception as e:
+            print(f"  分类状态时出错: {e}")
+    
+    if classified_count == 0:
+        print("  警告: 没有成功分类任何状态，无法创建奖励-类别关系图")
+        return
+    
+    avg_rewards = {}
+    for class_name, rewards_list in class_rewards.items():
+        avg_rewards[class_name] = sum(rewards_list) / len(rewards_list) if rewards_list else 0
+    
+    plt.figure(figsize=(10, 6))
 
-    classes = []
-    for state in states:
-        top_class, _ = visualizer.classify_state(state)
-        classes.append(top_class)
+    sorted_classes = sorted(avg_rewards.keys(), key=lambda x: avg_rewards[x], reverse=True)
+    classes = [f"{c} (n={class_counts[c]})" for c in sorted_classes]
+    rewards_avg = [avg_rewards[c] for c in sorted_classes]
+    
+    bars = plt.bar(classes, rewards_avg, color='skyblue')
     
 
-    unique_classes = np.unique(classes)
-    class_rewards = {cls: [] for cls in unique_classes}
+    for bar, reward in zip(bars, rewards_avg):
+        plt.text(bar.get_x() + bar.get_width()/2, reward + 0.01, 
+                f'{reward:.2f}', ha='center', va='bottom', fontsize=10)
     
-    for i, cls in enumerate(classes):
-        if i < len(rewards): 
-            class_rewards[cls].append(rewards[i])
-    
-
-    class_avg_rewards = {}
-    for cls, rews in class_rewards.items():
-        if rews:  
-            class_avg_rewards[cls] = np.mean(rews)
-        else:
-            class_avg_rewards[cls] = 0
-    
-
-    plt.figure(figsize=(12, 6))
-    
-    classes = list(class_avg_rewards.keys())
-    avg_rewards = list(class_avg_rewards.values())
-    
-
-    descriptions = []
-    for cls in classes:
-        desc = visualizer.descriptions[cls]
-        if len(desc) > 30:
-            desc = desc[:30] + "..."
-        descriptions.append(desc)
-    
-    plt.bar(range(len(descriptions)), avg_rewards, color='skyblue')
-    plt.xlabel('State Category')
+    plt.title(f'Average Reward by State Category (Using {aggregation_method} aggregation)')
     plt.ylabel('Average Reward')
-    plt.title('Average Rewards by State Category')
-    plt.xticks(range(len(descriptions)), descriptions, rotation=45, ha='right')
+    plt.xlabel('State Category')
+    plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
     
 
     plt.savefig(save_path)
     plt.close()
 
-def run_interactive_visualization(args, visualizer, env, save_dir):
-
-    state = env.reset()
+def run_interactive_visualization(args, env, visualizer):
+    print("\n=== 进入交互模式 ===")
+    print("按 'a' 执行随机动作，'c' 查看当前状态分类，'r' 重置环境，'q' 退出")
     
-    for i in range(1000): 
+    state = env.reset()
+    done = False
+    
+    while True:
+        cv2.imshow('Interactive Mode', visualizer.rgb_from_state(state))
 
-        save_path = os.path.join(save_dir, f"interactive_{i:03d}.png")
-        visualizer.visualize_classification(state, save_path)
+        key = cv2.waitKey(30) & 0xFF
         
-        print(f"\nStep: {i}")
-        print("Options:")
-        print("1. Execute random action")
-        print("2. View current state classification")
-        print("3. Reset environment")
-        print("4. Exit")
-        
-        choice = input("Choose (default 1): ") or "1"
-        
-        if choice == "1":
-            # 随机动作
+        if key == ord('q'):  
+            break
+        elif key == ord('a'):  
             action = env.action_space.sample()
-            state, reward, done, _ = env.step(action)
-            print(f"Action executed, reward: {reward}")
+            state, reward, done, info = env.step(action)
+            print(f"执行动作后的奖励: {reward:.4f}")
             
             if done:
-                print("Episode ended, resetting environment")
+                print("环境结束，自动重置")
                 state = env.reset()
+                done = False
+        elif key == ord('c'):  
+            class_idx, results = visualizer.classify_state(state, visualizer.temperature, args.aggregation_method)
+            
+            print("\n当前状态分类:")
+            
+            if hasattr(visualizer, 'display_descriptions'):
+                top_class = visualizer.display_descriptions[class_idx] if class_idx < len(visualizer.display_descriptions) else f"Unknown Class {class_idx}"
+                print(f"最可能的类别: {top_class}")
                 
-        elif choice == "2":
-            # 查看分类
-            top_class, results = visualizer.classify_state(state)
-            print("\nClassification results:")
-            for desc, conf in results:
-                truncated_desc = desc[:70] + "..." if len(desc) > 70 else desc
-                print(f"{truncated_desc}: {conf:.4f}")
+                print("\n所有类别的置信度:")
                 
-        elif choice == "3":
-            # 重置环境
+                if hasattr(visualizer, 'class_map') and isinstance(visualizer.descriptions[0], list):
+                    for cls_idx, conf in results[:5]: 
+                        class_name = visualizer.display_descriptions[cls_idx] if cls_idx < len(visualizer.display_descriptions) else f"Unknown Class {cls_idx}"
+                        print(f"- {class_name}: {conf:.4f}")
+                else:
+                    for i, (desc_idx, conf) in enumerate(results[:5]):
+                        if isinstance(desc_idx, int) and desc_idx < len(visualizer.display_descriptions):
+                            class_name = visualizer.display_descriptions[desc_idx]
+                        else:
+                            class_name = str(desc_idx)
+                        print(f"- {class_name}: {conf:.4f}")
+            else:
+                print(f"最可能的类别索引: {class_idx}")
+                print("\n所有置信度:")
+                for i, (desc, conf) in enumerate(results[:5]):
+                    print(f"- 类别 {desc}: {conf:.4f}")
+                    
+            visualizer.visualize_classification(state, aggregation_method=args.aggregation_method)
+        elif key == ord('r'):  
+            print("重置环境")
             state = env.reset()
-            print("Environment reset")
-            
-        elif choice == "4":
-            # 退出
-            break
-            
-        else:
-            print("Invalid choice, try again")
-
+            done = False
+    
+    cv2.destroyAllWindows()
+    print("交互模式已退出")
+    
+    
 def main():
     args = parse_args()
     
-    if not make_env:
-        print("Error: Environment module could not be imported")
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
+    if make_env is None:
+        print("错误: 无法导入环境模块，请确保环境设置正确")
         return
-    
-    # 使用hifno详细描述
-    descriptions = get_hifno_descriptions()
-    
-
-    save_dir = get_save_dir(args)
-    
-
-    visualizer = WalkerStateVisualizer(
-        descriptions=descriptions,
-        fps=args.fps,
-        frames_per_segment=args.frames_per_segment
-    )
     
 
     env = make_env(
@@ -504,184 +723,421 @@ def main():
         episode_length=args.episode_length,
         action_repeat=args.action_repeat,
         image_size=args.image_size,
-        mode='train'  
+        mode='train'
     )
     
-    if args.mode == 'episode':
-        run_episode_visualization(args, visualizer, env, descriptions, save_dir)
-    else:  # interactive
-        run_interactive_visualization(args, visualizer, env, save_dir)
 
-def run_episode_visualization(args, visualizer, env, descriptions, save_dir):
+    descriptions = get_hifno_descriptions()
+    if not args.use_multi_descriptions and isinstance(descriptions[0], list):
 
-    trained_agent = load_trained_agent(args.model_path, args.model_type) if args.model_path else None
+        descriptions = [desc_list[0] for desc_list in descriptions]
+        print("使用单一描述模式")
+    elif args.use_multi_descriptions:
+        print(f"使用多描述变体模式，共有{sum(len(desc_list) for desc_list in descriptions)}个描述")
+        print(f"使用聚合方法: {args.aggregation_method}")
     
 
-    frame_indices = None
-    
-
-    states, actions, rewards = visualizer.collect_walker_states(
-        domain_name=args.domain_name,
-        task_name=args.task_name,
-        seed=args.seed,
-        num_episodes=args.num_episodes,
-        steps_per_episode=args.steps_per_episode,
-        trained_agent=trained_agent,
-        frame_indices=frame_indices,  
-        episode_length=args.episode_length,
-        action_repeat=args.action_repeat,
-        image_size=args.image_size,
-        save_video=args.save_video,  
-        save_dir=save_dir  
+    visualizer = WalkerStateVisualizer(
+        descriptions=descriptions,
+        fps=args.fps,
+        frames_per_segment=args.frames_per_segment,
+        temperature=args.temperature
     )
     
-    print(f"Collected {len(states)} states")
+
+    if args.mode == 'interactive':
+        run_interactive_visualization(args, env, visualizer)
+    elif args.mode == 'video' or args.mode == 'episode':  
+        model = None
+        if args.model_path and args.model_type:
+
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            model = load_model(args.model_type, env, device, args.model_path)
+            print(f"加载了 {args.model_type} 模型: {args.model_path}")
+            
+
+        save_dir = get_save_dir(args)
+        
+        print(f"视频和可视化结果将保存到: {save_dir}")
+        
+
+        frame_indices = None
+        if args.frame_step > 0:
+
+            total_steps = args.frames_per_segment
+            # 使用frame_step作为采样间隔
+            frame_indices = range(0, total_steps, args.frame_step)
+            print(f"使用frame_step={args.frame_step}进行采样，预计采样{len(frame_indices)}个状态")
+        
+
+        run_episode_visualization(
+            env=env,
+            visualizer=visualizer,
+            num_episodes=args.num_episodes,
+            frames_per_segment=args.frames_per_segment,
+            frame_step=args.frame_step,
+            model=model,
+            save_video=args.save_video,
+            save_dir=save_dir,
+            fps=args.fps,
+            frame_indices=frame_indices,
+            aggregation_method=args.aggregation_method
+        )
+    else:
+        print(f"错误: 未知的模式 {args.mode}")
+        return
+
+def run_episode_visualization(
+    env, 
+    visualizer, 
+    num_episodes=1, 
+    frames_per_segment=1000, 
+    frame_step=1, 
+    model=None, 
+    save_video=False, 
+    save_dir=None, 
+    fps=30,
+    frame_indices=None,  
+    aggregation_method='max'  
+):
+
+    if save_dir and not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    
+    all_states = []
+    all_rewards = []
     
 
-    class_dirs = {}
-    for i in range(len(descriptions)):
-        class_dir = os.path.join(save_dir, f"class_{i}")
-        os.makedirs(class_dir, exist_ok=True)
-        class_dirs[i] = class_dir
+    for episode in range(num_episodes):
+        print(f"\n处理第 {episode+1}/{num_episodes} 集:")
         
 
-        with open(os.path.join(class_dir, "description.txt"), "w") as f:
-            f.write(descriptions[i])
+        states = []
+        rewards = []
+        
+        state = env.reset()
+        done = False
+        step = 0
+        total_reward = 0
+        
+
+        if model:
+            while not done:
+
+                with torch.no_grad():
+                    if hasattr(model, 'act'):
+                        # SVEA, DRQV2 模型
+                        action = model.act(state, step, eval_mode=True)
+                    elif hasattr(model, 'select_action'):
+
+                        action = model.select_action(state)
+                    else:
+
+                        try:
+                            # 提取最后3个通道（RGB图像）
+                            if isinstance(state, np.ndarray) and state.shape[0] > 3:
+                                rgb_state = state[-3:]
+                            else:
+                                rgb_state = state
+                                
+                            obs = torch.FloatTensor(rgb_state).to(model.device)
+                            if len(obs.shape) == 3:  # 确保有批次维度
+                                obs = obs.unsqueeze(0)
+                                
+                            action = model(obs, sample=False)
+                            if isinstance(action, tuple):
+                                action = action[0]
+                            action = action.cpu().numpy()
+                        except Exception as e:
+                            print(f"动作预测出错: {e}")
+
+                            action = env.action_space.sample()
+                
+
+                next_state, reward, done, _ = env.step(action)
+                
+
+                if frame_indices is None and step % frame_step == 0:
+                    states.append(next_state)  
+                    rewards.append(reward)
+                elif frame_indices is not None and step in frame_indices:
+                    states.append(next_state)  
+                    rewards.append(reward)
+                
+
+                state = next_state
+                total_reward += reward
+                step += 1
+                
+ 
+                if step >= frames_per_segment:
+                    break
+                
+
+                if step % 100 == 0:
+                    print(f"  步骤 {step}/{frames_per_segment}，当前奖励：{total_reward:.2f}")
+        else:
+
+            while not done:
+                action = env.action_space.sample()
+                next_state, reward, done, _ = env.step(action)
+                
+
+                if frame_indices is None and step % frame_step == 0:
+                    states.append(next_state)  
+                    rewards.append(reward)
+                elif frame_indices is not None and step in frame_indices:
+                    states.append(next_state)  
+                    rewards.append(reward)
+                
+                state = next_state
+                total_reward += reward
+                step += 1
+                
+                if step >= frames_per_segment:
+                    break
+                
+                if step % 100 == 0:
+                    print(f"  步骤 {step}/{frames_per_segment}，当前奖励：{total_reward:.2f}")
+        
+        print(f"  集 {episode+1} 完成，总奖励：{total_reward:.2f}，收集了 {len(states)} 个状态")
+        
+        all_states.extend(states)
+        all_rewards.extend(rewards)
+    
+    print(f"\n总共收集了 {len(all_states)} 个状态")
     
 
-    classes = []
-    for i, state in enumerate(states):
-        # 分类状态
-        top_class, results = visualizer.classify_state(state)
-        classes.append(top_class)
-        
-        
-        class_save_path = os.path.join(class_dirs[top_class], f"state_{i:03d}.png")
-        plt.figure(figsize=(8, 8))
-        
-        
-        if isinstance(state, torch.Tensor):
-            state_np = state.numpy()
-        else:
-            state_np = state
+    if not all_states:
+        print("没有收集到状态，无法进行可视化")
+        return
+    
+
+    classified_states = []
+    for i, state in enumerate(all_states):
+        try:
+            class_idx, results = visualizer.classify_state(state, visualizer.temperature, aggregation_method)
             
-        if state_np.shape[0] > 3:
-            display_state = state_np[-3:]
-        else:
-            display_state = state_np
+            if hasattr(visualizer, 'display_descriptions'):
+                if class_idx < len(visualizer.display_descriptions):
+                    top_class = visualizer.display_descriptions[class_idx]
+                else:
+                    top_class = f"Unknown Class {class_idx}"
+            else:
+                top_class = f"Class {class_idx}"
+                
+            confidence = results[0][1]  # 获取最高置信度
+            classified_states.append((state, class_idx, top_class, confidence))
             
-        display_state = np.transpose(display_state, (1, 2, 0))
-        if display_state.max() <= 1.0:
-            display_state = display_state * 255
-        display_state = display_state.astype(np.uint8)
+            if i % 10 == 0 or i == len(all_states) - 1:
+                print(f"  分类进度: {i+1}/{len(all_states)}")
+        except Exception as e:
+            print(f"  分类状态 {i} 时出错: {e}")
+    
+
+    class_counts = defaultdict(int)
+    for _, _, class_name, _ in classified_states:
+        class_counts[class_name] += 1
+    
+    print("\n类别分布:")
+    if classified_states:
+        for class_name, count in sorted(class_counts.items(), key=lambda x: x[1], reverse=True):
+            print(f"  {class_name}: {count} 个状态 ({count/len(classified_states)*100:.1f}%)")
         
-        plt.imshow(display_state)
-        plt.title(f"Class: {top_class}, Confidence: {results[0][1]:.2f}")
-        plt.axis('off')
-        plt.tight_layout()
-        plt.savefig(class_save_path)
-        plt.close()
+
+        avg_confidence = sum(conf for _, _, _, conf in classified_states) / len(classified_states)
+        print(f"\n平均置信度: {avg_confidence:.4f}")
+    else:
+        print("  警告: 没有成功分类任何状态!")
+    
+
+    if save_dir and classified_states:
+
+        reward_plot_path = os.path.join(save_dir, "reward_by_class.png")
+        create_reward_class_plot(all_states, all_rewards, visualizer, reward_plot_path, aggregation_method)
+        print(f"奖励-类别关系图已保存到: {reward_plot_path}")
         
-        top_desc, top_conf = results[0]
-        truncated_desc = top_desc[:50] + "..." if len(top_desc) > 50 else top_desc
-        print(f"State {i}: {truncated_desc} (confidence: {top_conf:.2f})")
+
+        class_summary_path = os.path.join(save_dir, "class_examples.png")
+        create_class_summary(all_states, visualizer, class_summary_path, aggregation_method)
+        print(f"类别示例汇总已保存到: {class_summary_path}")
     
 
     tsne_path = os.path.join(save_dir, "tsne_visualization.png")
-    visualizer.visualize_tsne(states, tsne_path)
+    try:
+        visualizer.visualize_tsne(all_states, tsne_path, aggregation_method)
+        print(f"t-SNE可视化已保存到: {tsne_path}")
+    except Exception as e:
+        print(f"创建t-SNE可视化时出错: {e}")
     
 
-    reward_path = os.path.join(save_dir, "reward_by_class.png")
-    create_reward_class_plot(states, rewards, visualizer, reward_path)
+    class_dirs = {}
+    if hasattr(visualizer, 'display_descriptions'):
+        for i in range(len(visualizer.display_descriptions)):
+            class_dir = os.path.join(save_dir, f"class_{i}")
+            os.makedirs(class_dir, exist_ok=True)
+            class_dirs[i] = class_dir
+            
+
+            with open(os.path.join(class_dir, "descriptions.txt"), "w") as f:
+                if hasattr(visualizer, 'descriptions') and isinstance(visualizer.descriptions[0], list):
+                    for j, desc in enumerate(visualizer.descriptions[i]):
+                        f.write(f"{j+1}. {desc}\n")
+                else:
+                    f.write(visualizer.display_descriptions[i])
     
 
-    class_summary_path = os.path.join(save_dir, "class_summary.png")
-    create_class_summary(states, visualizer, class_summary_path)
+    for i, (state, class_idx, class_name, confidence) in enumerate(classified_states):
+        if class_idx in class_dirs:
+            state_path = os.path.join(class_dirs[class_idx], f"state_{i:03d}_conf_{confidence:.3f}.png")
+            try:
+                visualizer.visualize_classification(state, state_path, aggregation_method)
+            except Exception as e:
+                print(f"  保存状态 {i} 到类别 {class_idx} 时出错: {e}")
     
-    print(f"All visualization results saved to: {save_dir}")
-    print("Organized by class in subdirectories")
-    print("Each class directory contains a description.txt file with the full class description")
+    print(f"分类状态已保存到各个类别目录中")
+    
 
-def create_class_summary(states, visualizer, save_path):
+    examples_dir = os.path.join(save_dir, "examples")
+    if not os.path.exists(examples_dir):
+        os.makedirs(examples_dir)
+        
 
-    classes = []
+    class_examples = defaultdict(list)
+    for state, class_idx, class_name, confidence in classified_states:
+        if len(class_examples[class_name]) < 5:  
+            class_examples[class_name].append((state, confidence))
+    
+    for class_name, examples in class_examples.items():
+        class_dir = os.path.join(examples_dir, class_name.replace(" ", "_"))
+        if not os.path.exists(class_dir):
+            os.makedirs(class_dir)
+            
+        for i, (state, confidence) in enumerate(examples):
+            example_path = os.path.join(class_dir, f"example_{i+1}_conf_{confidence:.3f}.png")
+            visualizer.visualize_classification(state, example_path, aggregation_method)
+    
+    print(f"类别示例已保存到: {examples_dir}")
+    
+
+    if save_video and classified_states:
+        video_path = os.path.join(save_dir, "episode_visualization.mp4")
+        
+
+        frames = []
+        for i, (state, _, _, _) in enumerate(classified_states):
+            vis_result_path = os.path.join(save_dir, f"temp_frame_{i:04d}.png")
+            visualizer.visualize_classification(state, vis_result_path, aggregation_method)
+            
+
+            frame = cv2.imread(vis_result_path)
+            frames.append(frame)
+            
+
+            os.remove(vis_result_path)
+        
+
+        if frames:
+            height, width, _ = frames[0].shape
+            
+
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            video_writer = cv2.VideoWriter(video_path, fourcc, fps, (width, height))
+            
+
+            for frame in frames:
+                video_writer.write(frame)
+            
+
+            video_writer.release()
+            
+            print(f"可视化视频已保存到: {video_path}")
+        else:
+            print("没有帧可用于创建视频")
+            
+    return all_states, all_rewards, classified_states
+
+def create_class_summary(states, visualizer, save_path, aggregation_method='max'):
+    classified_states = []
     for state in states:
-        top_class, _ = visualizer.classify_state(state)
-        classes.append(top_class)
+        try:
+            class_idx, _ = visualizer.classify_state(state, visualizer.temperature, aggregation_method)
+            classified_states.append((state, class_idx))
+        except Exception as e:
+            print(f"  分类状态时出错: {e}")
+    
+    if not classified_states:
+        print("  警告: 没有成功分类任何状态，无法创建类别示例汇总")
+        return
     
 
-    unique_classes = np.unique(classes)
     class_examples = {}
-    
-    for cls in unique_classes:
-
-        indices = [i for i, c in enumerate(classes) if c == cls]
-        if indices:
-
-            class_examples[cls] = states[indices[0]]
+    for state, class_idx in classified_states:
+        if hasattr(visualizer, 'display_descriptions') and class_idx < len(visualizer.display_descriptions):
+            class_name = visualizer.display_descriptions[class_idx]
+        else:
+            class_name = f"Class {class_idx}"
+            
+        if class_name not in class_examples:
+            class_examples[class_name] = state
     
 
     n_classes = len(class_examples)
-    cols = min(3, n_classes)
-    rows = (n_classes + cols - 1) // cols
+    if n_classes == 0:
+        print("  警告: 没有找到类别示例，无法创建类别示例汇总")
+        return  
     
-
-    fig, axes = plt.subplots(rows, cols, figsize=(cols*4, rows*4))
-    if rows == 1 and cols == 1:
-        axes = np.array([axes])
-    axes = axes.flatten()
-    
-    for i, (cls, state) in enumerate(class_examples.items()):
-        if i < len(axes):
-            ax = axes[i]
+    try:
+        cols = min(3, n_classes)
+        rows = (n_classes + cols - 1) // cols
+        
+        plt.figure(figsize=(cols * 4, rows * 4))
+        
+        for i, (class_name, state) in enumerate(class_examples.items()):
+            plt.subplot(rows, cols, i + 1)
             
+            try:
 
-            if isinstance(state, torch.Tensor):
-                state_np = state.numpy()
-            else:
-                state_np = state
-                
-            if state_np.shape[0] > 3:
-                display_state = state_np[-3:]
-            else:
-                display_state = state_np
-                
-            display_state = np.transpose(display_state, (1, 2, 0))
-            if display_state.max() <= 1.0:
-                display_state = display_state * 255
-            display_state = display_state.astype(np.uint8)
-            
-            ax.imshow(display_state)
-            
+                state_rgb = visualizer.rgb_from_state(state)
+                plt.imshow(state_rgb)
+                plt.title(class_name)
+                plt.axis('off')
+            except Exception as e:
+                print(f"  显示类别 '{class_name}' 的图像时出错: {e}")
+                plt.text(0.5, 0.5, f"Error: {str(e)}", ha='center', va='center', fontsize=10, transform=plt.gca().transAxes)
+                plt.title(f"{class_name} (Error)")
+                plt.axis('off')
+        
+        plt.tight_layout()
+        plt.suptitle(f'Examples of Each Category (Using {aggregation_method} aggregation)', fontsize=16, y=1.02)
+        
 
-            desc = visualizer.descriptions[cls]
-            if len(desc) > 40:
-                desc = desc[:40] + "..."
-                
-            ax.set_title(f"Class {cls}: {desc}")
-            ax.axis('off')
-    
+        plt.savefig(save_path)
+        plt.close()
+        print(f"  类别示例汇总已保存到: {save_path}")
+    except Exception as e:
+        print(f"  创建类别示例汇总时出错: {e}")
 
-    for i in range(len(class_examples), len(axes)):
-        axes[i].axis('off')
-    
-    plt.tight_layout()
-    plt.savefig(save_path)
-    plt.close()
+        plt.figure(figsize=(8, 6))
+        plt.text(0.5, 0.5, f"Error creating class summary: {str(e)}", ha='center', va='center', fontsize=12)
+        plt.tight_layout()
+        plt.savefig(save_path)
+        plt.close()
 
-def load_trained_agent(model_path, model_type):
+def load_model(model_type, env, device, model_path):
 
     if not model_path or not os.path.exists(model_path):
         return None
         
     print(f"Loading trained model from: {model_path}")
     try:
-        if model_type == 'svea':
-            agent = torch.load(model_path)
-        else:
 
-            agent = torch.load(model_path)
-        agent.eval()
+        agent = torch.load(model_path, map_location=device)
+        
+
+        if hasattr(agent, 'eval'):
+            agent.eval()
+            
         return agent
     except Exception as e:
         print(f"Error loading model: {e}")
@@ -697,6 +1153,7 @@ CUDA_VISIBLE_DEVICES=5 python clip_vis.py --domain_name walker --task_name walk 
 # 交互模式
 CUDA_VISIBLE_DEVICES=5 python clip_vis.py --mode interactive
 
+# 使用多描述变体和较低的温度系数
 CUDA_VISIBLE_DEVICES=5 python clip_vis.py \
     --domain_name walker \
     --task_name walk \
@@ -707,8 +1164,12 @@ CUDA_VISIBLE_DEVICES=5 python clip_vis.py \
     --episode_length 2000 \
     --action_repeat 1 \
     --frames_per_segment 1000 \
+    --frame_step 15 \
     --fps 30 \
-    --save_video
+    --save_video \
+    --use_multi_descriptions \
+    --temperature 1 \
+    --aggregation_method mean
 
 
 CUDA_VISIBLE_DEVICES=5 python clip_vis.py --domain_name walker --task_name walk --seed 42 --model_path "/mnt/lustre/GPU4/home/wuhanpeng/dmcontrol/logs/svea/svea_walker_walk_20241224_111447/model/500000.pt" --model_type svea --num_episodes 2 --episode_length 800 --action_repeat 2 --frame_step 4
