@@ -23,14 +23,15 @@ except ImportError:
     make_env = None
 
 class WalkerStateVisualizer:
-    def __init__(self, descriptions=None, fps=30, frames_per_segment=100, temperature=1.0):
+    def __init__(self, descriptions=None, fps=30, frames_per_segment=100, temperature=1.0, model_name="ViT-B/32"):
         self.fps = fps
         self.frames_per_segment = frames_per_segment
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model, self.preprocess = clip.load("ViT-B/32", device=self.device)
+        print(f"加载CLIP模型: {model_name}...")
+        self.model, self.preprocess = clip.load(model_name, device=self.device)
         self.temperature = temperature
+        self.model_name = model_name
         
-
         if descriptions is not None:
             self.descriptions = descriptions
             self.class_map = {} 
@@ -195,8 +196,13 @@ class WalkerStateVisualizer:
             
         if state.shape[0] > 3:
             state = state[-3:]
+        
+        # 根据模型类型选择不同的输入尺寸
+        input_size = 224
+        if self.model_name == "ViT-L/14@336px":
+            input_size = 336
             
-        state = F.interpolate(state.unsqueeze(0), size=(224, 224), mode='bilinear', align_corners=False)[0]
+        state = F.interpolate(state.unsqueeze(0), size=(input_size, input_size), mode='bilinear', align_corners=False)[0]
         
         if state.max() > 1.0:
             state = state / 255.0
@@ -275,7 +281,7 @@ class WalkerStateVisualizer:
                 
             class_index, confidence_scores = self.classify_state(state_copy, self.temperature, aggregation_method)
             
-            plt.figure(figsize=(12, 8))
+            plt.figure(figsize=(14, 8))  
             
             state_rgb = self.rgb_from_state(state)
             plt.subplot(1, 2, 1)
@@ -288,45 +294,53 @@ class WalkerStateVisualizer:
             if hasattr(self, 'class_map') and isinstance(self.descriptions[0], list):
                 categories = []
                 confidence = []
+                original_labels = []
                 
                 for cls_idx, conf in confidence_scores[:5]:  
                     if cls_idx < len(self.display_descriptions):
-                        categories.append(self.display_descriptions[cls_idx])
+
+                        original_labels.append(self.display_descriptions[cls_idx])
+                        categories.append(f"Class {cls_idx}")
                         confidence.append(conf)
                     else:
-                        categories.append(f"Unknown Class {cls_idx}")
+                        original_labels.append(f"Unknown Class {cls_idx}")
+                        categories.append(f"Class {cls_idx}")
                         confidence.append(conf)
                 
-                top_class_name = self.display_descriptions[class_index] if class_index < len(self.display_descriptions) else f"Unknown Class {class_index}"
-                colors = ['green' if cat == top_class_name else 'gray' for cat in categories]
+                top_class_idx = class_index
+                colors = ['green' if i == 0 else 'gray' for i in range(len(categories))]
                 
                 bars = plt.barh(categories, confidence, color=colors)
                 plt.xlabel('Confidence')
                 plt.title(f'Classification Results (Using {aggregation_method} aggregation)')
                 
-                for bar, conf in zip(bars, confidence):
+
+                max_conf = max(confidence) if confidence else 0.5
+                for i, (bar, conf, desc) in enumerate(zip(bars, confidence, original_labels)):
+
                     plt.text(conf+0.01, bar.get_y()+bar.get_height()/2, f'{conf:.3f}', 
                             va='center', ha='left', fontsize=10)
+                    
+
+                    if i == 0:  
+                        plt.figtext(0.5, 0.02, f"Class {top_class_idx}: {original_labels[0]}", 
+                                   ha="center", fontsize=9, bbox={"facecolor":"white", "alpha":0.8, "pad":5})
             else:
-               
                 categories = []
                 confidence = []
+                original_labels = []
                 
-                for desc_idx, conf in confidence_scores[:5]:  
+                for i, (desc_idx, conf) in enumerate(confidence_scores[:5]):  
                     if isinstance(desc_idx, int) and desc_idx < len(self.display_descriptions):
-                        
-                        desc = self.display_descriptions[desc_idx]
-                        if len(desc) > 40:
-                            desc = desc[:40] + "..."
-                        categories.append(desc)
+                        original_labels.append(self.display_descriptions[desc_idx])
+                        categories.append(f"Class {desc_idx}")
                     else:
-                        categories.append(str(desc_idx))
+                        original_labels.append(str(desc_idx))
+                        categories.append(f"Class {desc_idx}")
                     confidence.append(conf)
                 
-                
-                top_class_name = self.display_descriptions[class_index] if isinstance(class_index, int) and class_index < len(self.display_descriptions) else str(class_index)
+                top_class_idx = class_index if isinstance(class_index, int) else 0
                 colors = ['green' if i == 0 else 'gray' for i in range(len(categories))]
-                
                 
                 bars = plt.barh(categories, confidence, color=colors)
                 plt.xlabel('Confidence')
@@ -336,9 +350,12 @@ class WalkerStateVisualizer:
                 for bar, conf in zip(bars, confidence):
                     plt.text(conf+0.01, bar.get_y()+bar.get_height()/2, f'{conf:.3f}', 
                             va='center', ha='left', fontsize=10)
+                
+                if len(original_labels) > 0:
+                    plt.figtext(0.5, 0.02, f"Class {top_class_idx}: {original_labels[0]}", 
+                               ha="center", fontsize=9, bbox={"facecolor":"white", "alpha":0.8, "pad":5})
             
-            plt.tight_layout()
-            
+            plt.subplots_adjust(top=0.9, bottom=0.2, left=0.1, right=0.95)
             
             if save_path:
                 plt.savefig(save_path)
@@ -367,14 +384,27 @@ class WalkerStateVisualizer:
         batch = torch.stack(processed_states).to(self.device)
         
         with torch.no_grad():
-            # 计算图像特征
-            features = self.model.encode_image(batch)
-            features = features / features.norm(dim=-1, keepdim=True)
+
+            batch_size = 32  
+            if "ViT-L" in self.model_name:
+                batch_size = 16  
             
-            # 计算与文本特征的相似度
+            features_list = []
+            for i in range(0, len(batch), batch_size):
+                print(f"处理批次 {i//batch_size + 1}/{(len(batch) + batch_size - 1)//batch_size}...")
+                batch_chunk = batch[i:i+batch_size]
+                features_chunk = self.model.encode_image(batch_chunk)
+                features_chunk = features_chunk / features_chunk.norm(dim=-1, keepdim=True)
+                features_list.append(features_chunk)
+                
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            
+            features = torch.cat(features_list, dim=0)
+            
             similarities = features @ self.text_features.T
             
-
             if hasattr(self, 'class_map') and isinstance(self.descriptions[0], list):
                 
                 class_indices = []
@@ -540,6 +570,13 @@ def parse_args():
     parser.add_argument('--aggregation_method', type=str, default='max',
                       choices=['max', 'mean', 'sum'],
                       help='Method to aggregate confidences from multiple descriptions per class')
+    
+    parser.add_argument('--model_name', type=str, default="ViT-B/32",
+                      choices=["ViT-B/32", "ViT-B/16", "ViT-L/14", "ViT-L/14@336px", "RN50", "RN101"],
+                      help='CLIP model type to use')
+    
+    parser.add_argument('--save_examples', action='store_true',
+                      help='Save example visualizations for each class')
     
     return parser.parse_args()
 
@@ -741,10 +778,12 @@ def main():
         descriptions=descriptions,
         fps=args.fps,
         frames_per_segment=args.frames_per_segment,
-        temperature=args.temperature
+        temperature=args.temperature,
+        model_name=args.model_name
     )
     
-
+    print(f"使用CLIP模型: {args.model_name}")
+    
     if args.mode == 'interactive':
         run_interactive_visualization(args, env, visualizer)
     elif args.mode == 'video' or args.mode == 'episode':  
@@ -781,7 +820,8 @@ def main():
             save_dir=save_dir,
             fps=args.fps,
             frame_indices=frame_indices,
-            aggregation_method=args.aggregation_method
+            aggregation_method=args.aggregation_method,
+            save_examples=args.save_examples 
         )
     else:
         print(f"错误: 未知的模式 {args.mode}")
@@ -798,7 +838,8 @@ def run_episode_visualization(
     save_dir=None, 
     fps=30,
     frame_indices=None,  
-    aggregation_method='max'  
+    aggregation_method='max',
+    save_examples=False  
 ):
 
     if save_dir and not os.path.exists(save_dir):
@@ -809,7 +850,7 @@ def run_episode_visualization(
     
 
     for episode in range(num_episodes):
-        print(f"\n处理第 {episode+1}/{num_episodes} 集:")
+        print(f"\n处理第 {episode+1}/{num_episodes} episode:")
         
 
         states = []
@@ -900,7 +941,7 @@ def run_episode_visualization(
                 if step % 100 == 0:
                     print(f"  步骤 {step}/{frames_per_segment}，当前奖励：{total_reward:.2f}")
         
-        print(f"  集 {episode+1} 完成，总奖励：{total_reward:.2f}，收集了 {len(states)} 个状态")
+        print(f"  episode {episode+1} 完成，总奖励：{total_reward:.2f}，收集了 {len(states)} 个状态")
         
         all_states.extend(states)
         all_rewards.extend(rewards)
@@ -997,27 +1038,27 @@ def run_episode_visualization(
     
     print(f"分类状态已保存到各个类别目录中")
     
-
-    examples_dir = os.path.join(save_dir, "examples")
-    if not os.path.exists(examples_dir):
-        os.makedirs(examples_dir)
-        
-
-    class_examples = defaultdict(list)
-    for state, class_idx, class_name, confidence in classified_states:
-        if len(class_examples[class_name]) < 5:  
-            class_examples[class_name].append((state, confidence))
-    
-    for class_name, examples in class_examples.items():
-        class_dir = os.path.join(examples_dir, class_name.replace(" ", "_"))
-        if not os.path.exists(class_dir):
-            os.makedirs(class_dir)
+    if save_examples and save_dir and classified_states:
+        examples_dir = os.path.join(save_dir, "examples")
+        if not os.path.exists(examples_dir):
+            os.makedirs(examples_dir)
             
-        for i, (state, confidence) in enumerate(examples):
-            example_path = os.path.join(class_dir, f"example_{i+1}_conf_{confidence:.3f}.png")
-            visualizer.visualize_classification(state, example_path, aggregation_method)
-    
-    print(f"类别示例已保存到: {examples_dir}")
+
+        class_examples = defaultdict(list)
+        for state, class_idx, class_name, confidence in classified_states:
+            if len(class_examples[class_name]) < 5:  
+                class_examples[class_name].append((state, confidence))
+        
+        for class_name, examples in class_examples.items():
+            class_dir = os.path.join(examples_dir, class_name.replace(" ", "_"))
+            if not os.path.exists(class_dir):
+                os.makedirs(class_dir)
+                
+            for i, (state, confidence) in enumerate(examples):
+                example_path = os.path.join(class_dir, f"example_{i+1}_conf_{confidence:.3f}.png")
+                visualizer.visualize_classification(state, example_path, aggregation_method)
+        
+        print(f"类别示例已保存到: {examples_dir}")
     
 
     if save_video and classified_states:
@@ -1162,17 +1203,29 @@ CUDA_VISIBLE_DEVICES=5 python clip_vis.py \
     --model_type svea \
     --num_episodes 1 \
     --episode_length 2000 \
-    --action_repeat 1 \
+    --action_repeat 2 \
     --frames_per_segment 1000 \
     --frame_step 15 \
     --fps 30 \
     --save_video \
     --use_multi_descriptions \
-    --temperature 1 \
-    --aggregation_method mean
+    --temperature 0.5 \
+    --aggregation_method mean \
+    --model_name ViT-L/14
 
+
+    ViT-B/32
+
+# 生成examples文件夹
+CUDA_VISIBLE_DEVICES=5 python clip_vis.py \
+    --save_examples
 
 CUDA_VISIBLE_DEVICES=5 python clip_vis.py --domain_name walker --task_name walk --seed 42 --model_path "/mnt/lustre/GPU4/home/wuhanpeng/dmcontrol/logs/svea/svea_walker_walk_20241224_111447/model/500000.pt" --model_type svea --num_episodes 2 --episode_length 800 --action_repeat 2 --frame_step 4
 
+# 使用ViT-L/14模型
+CUDA_VISIBLE_DEVICES=5 python clip_vis.py --domain_name walker --task_name walk --seed 42 --model_name ViT-L/14 --num_episodes 1 --frame_step 10
+
+# 使用ViT-L/14@336px高分辨率模型
+CUDA_VISIBLE_DEVICES=5 python clip_vis.py --domain_name walker --task_name walk --seed 42 --model_name "ViT-L/14@336px" --num_episodes 1 --frame_step 20
 
 '''
