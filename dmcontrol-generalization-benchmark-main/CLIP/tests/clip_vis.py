@@ -38,13 +38,13 @@ def parse_args():
                         help='Number of episodes to collect')
     parser.add_argument('--steps_per_episode', type=int, default=20,
                         help='Steps per episode to collect')
-    
+
     parser.add_argument('--model_path', type=str, default=None,
                         help='Path to trained model checkpoint')
     parser.add_argument('--model_type', type=str, default='svea',
                         choices=['svea', 'drq', 'hifno', 'hifno_bisim'],
                         help='Type of trained model')
-    
+
     parser.add_argument('--episode_length', type=int, default=1000,
                       help='Length of each episode')
     parser.add_argument('--action_repeat', type=int, default=4,
@@ -53,7 +53,7 @@ def parse_args():
                       help='Size of observation images')
     parser.add_argument('--frame_step', type=int, default=20,
                       help='Number of steps between frame captures')
-    
+
     parser.add_argument('--save_video', action='store_true',
                         help='Save simulation video')
     parser.add_argument('--fps', type=int, default=30,
@@ -78,8 +78,19 @@ def parse_args():
     parser.add_argument('--save_examples', action='store_true',
                       help='Save example visualizations for each class')
     
+    # 聚类相关参数
+    parser.add_argument('--use_clustering', action='store_true',
+                        help='使用无监督聚类而不是预定义分类')
+    parser.add_argument('--clustering_algorithm', type=str, default='kmeans',
+                        choices=['kmeans', 'dbscan'],
+                        help='聚类算法: kmeans或dbscan')
+    parser.add_argument('--n_clusters', type=int, default=None,
+                        help='聚类数量，为None时自动确定')
+    parser.add_argument('--use_text_descriptions', action='store_true',
+                        help='将文本描述与聚类结合')
+    
     return parser.parse_args()
-
+    
 def main():
     args = parse_args()
     
@@ -89,7 +100,7 @@ def main():
     if make_env is None:
         print("错误: 无法导入环境模块，请确保环境设置正确")
         return
-    
+
     env = make_env(
         domain_name=args.domain_name,
         task_name=args.task_name,
@@ -99,7 +110,7 @@ def main():
         image_size=args.image_size,
         mode='train'
     )
-    
+
     descriptions = get_hifno_descriptions()
     if not args.use_multi_descriptions and isinstance(descriptions[0], list):
         descriptions = [desc_list[0] for desc_list in descriptions]
@@ -107,7 +118,7 @@ def main():
     elif args.use_multi_descriptions:
         print(f"使用多描述变体模式，共有{sum(len(desc_list) for desc_list in descriptions)}个描述")
         print(f"使用聚合方法: {args.aggregation_method}")
-    
+
     visualizer = WalkerStateVisualizer(
         descriptions=descriptions,
         fps=args.fps,
@@ -119,24 +130,33 @@ def main():
     print(f"使用CLIP模型: {args.model_name}")
     
     if args.mode == 'interactive':
-        run_interactive_visualization(args, env, visualizer)
+        run_interactive_visualization(env, visualizer, aggregation_method=args.aggregation_method)
     elif args.mode == 'video' or args.mode == 'episode':  
         model = None
         if args.model_path and args.model_type:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             model = load_model(args.model_type, env, device, args.model_path)
             print(f"加载了 {args.model_type} 模型: {args.model_path}")
-        
+
         save_dir = get_save_dir(args)
         
         print(f"视频和可视化结果将保存到: {save_dir}")
-        
+
         frame_indices = None
         if args.frame_step > 0:
             total_steps = args.frames_per_segment
             frame_indices = range(0, total_steps, args.frame_step)
             print(f"使用frame_step={args.frame_step}进行采样，预计采样{len(frame_indices)}个状态")
         
+        # 打印聚类设置信息
+        if args.use_clustering:
+            print(f"\n启用无监督聚类: {args.clustering_algorithm}")
+            if args.n_clusters:
+                print(f"指定聚类数量: {args.n_clusters}")
+            else:
+                print("聚类数量将自动确定")
+            print(f"文本描述结合: {'启用' if args.use_text_descriptions else '禁用'}")
+
         run_episode_visualization(
             env=env,
             visualizer=visualizer,
@@ -149,7 +169,12 @@ def main():
             fps=args.fps,
             frame_indices=frame_indices,
             aggregation_method=args.aggregation_method,
-            save_examples=args.save_examples 
+            save_examples=args.save_examples,
+            # 聚类相关参数
+            use_clustering=args.use_clustering,
+            clustering_algorithm=args.clustering_algorithm,
+            n_clusters=args.n_clusters,
+            use_text_descriptions=args.use_text_descriptions
         )
     else:
         print(f"错误: 未知的模式 {args.mode}")
@@ -196,4 +221,71 @@ CUDA_VISIBLE_DEVICES=5 python clip_vis.py --domain_name walker --task_name walk 
 
 # 使用ViT-L/14@336px高分辨率模型
 CUDA_VISIBLE_DEVICES=5 python clip_vis.py --domain_name walker --task_name walk --seed 42 --model_name "ViT-L/14@336px" --num_episodes 1 --frame_step 20
+
+# 使用K-means聚类（自动确定聚类数量）
+CUDA_VISIBLE_DEVICES=5 python clip_vis.py \
+    --domain_name walker \
+    --task_name walk \
+    --seed 2 \
+    --model_path "/mnt/lustre/GPU4/home/wuhanpeng/dmcontrol/videos/walker_walk/svea/42/20250226_103416/model/400000.pt" \
+    --model_type svea \
+    --num_episodes 1 \
+    --episode_length 2000 \
+    --action_repeat 2 \
+    --frames_per_segment 1000 \
+    --frame_step 15 \
+    --fps 30 \
+    --save_video \
+    --use_multi_descriptions \
+    --temperature 0.5 \
+    --aggregation_method mean \
+    --model_name ViT-L/14 \
+    --use_clustering \
+    --clustering_algorithm kmeans \
+    --use_text_descriptions
+
+# 使用K-means聚类（指定5个聚类）
+CUDA_VISIBLE_DEVICES=5 python clip_vis.py \
+    --domain_name walker \
+    --task_name walk \
+    --seed 2 \
+    --model_path "/mnt/lustre/GPU4/home/wuhanpeng/dmcontrol/videos/walker_walk/svea/42/20250226_103416/model/400000.pt" \
+    --model_type svea \
+    --num_episodes 1 \
+    --episode_length 2000 \
+    --action_repeat 2 \
+    --frames_per_segment 1000 \
+    --frame_step 15 \
+    --fps 30 \
+    --save_video \
+    --use_multi_descriptions \
+    --temperature 0.5 \
+    --aggregation_method mean \
+    --model_name ViT-L/14 \
+    --use_clustering \
+    --clustering_algorithm kmeans \
+    --n_clusters 5 \
+    --use_text_descriptions
+
+# 使用DBSCAN聚类算法
+CUDA_VISIBLE_DEVICES=5 python clip_vis.py \
+    --domain_name walker \
+    --task_name walk \
+    --seed 2 \
+    --model_path "/mnt/lustre/GPU4/home/wuhanpeng/dmcontrol/videos/walker_walk/svea/42/20250226_103416/model/400000.pt" \
+    --model_type svea \
+    --num_episodes 1 \
+    --episode_length 2000 \
+    --action_repeat 2 \
+    --frames_per_segment 1000 \
+    --frame_step 15 \
+    --fps 30 \
+    --save_video \
+    --use_multi_descriptions \
+    --temperature 0.5 \
+    --aggregation_method mean \
+    --model_name ViT-L/14 \
+    --use_clustering \
+    --clustering_algorithm dbscan \
+    --use_text_descriptions
 '''

@@ -464,6 +464,311 @@ class WalkerStateVisualizer:
             
         return display_state
 
+    def cluster_states(self, states, n_clusters=None, use_text_descriptions=True, 
+                       algorithm='kmeans', save_path=None, visualize=True):
+        from sklearn.cluster import KMeans, DBSCAN
+        from sklearn.metrics import silhouette_score
+        from sklearn.decomposition import PCA
+        import numpy as np
+        
+        print("处理状态并提取CLIP特征...")
+        processed_states = []
+        for state in states:
+            processed_state = self.preprocess_state(state)
+            processed_states.append(processed_state)
+        
+        batch = torch.stack(processed_states).to(self.device)
+        
+        with torch.no_grad():
+            batch_size = 32
+            if "ViT-L" in self.model_name:
+                batch_size = 16
+            
+            features_list = []
+            for i in range(0, len(batch), batch_size):
+                print(f"处理批次 {i//batch_size + 1}/{(len(batch) + batch_size - 1)//batch_size}...")
+                batch_chunk = batch[i:i+batch_size]
+                features_chunk = self.model.encode_image(batch_chunk)
+                features_chunk = features_chunk / features_chunk.norm(dim=-1, keepdim=True)
+                features_list.append(features_chunk)
+                
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            
+            features = torch.cat(features_list, dim=0)
+            features_np = features.cpu().numpy()
+        
+        if algorithm.lower() == 'kmeans':
+            if n_clusters is None:
+                print("自动确定最佳聚类数量...")
+                max_clusters = min(10, len(states) // 5)
+                if max_clusters < 2:
+                    max_clusters = 2
+                
+                inertias = []
+                silhouette_scores = []
+                
+                for k in range(2, max_clusters + 1):
+                    kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+                    kmeans.fit(features_np)
+                    inertias.append(kmeans.inertia_)
+                    
+                    if k > 1:
+                        score = silhouette_score(features_np, kmeans.labels_)
+                        silhouette_scores.append(score)
+                        print(f"  k={k}, 轮廓系数: {score:.4f}, 惯性: {kmeans.inertia_:.4f}")
+                
+                if silhouette_scores:
+                    best_k = np.argmax(silhouette_scores) + 2
+                    print(f"基于轮廓系数选择的最佳聚类数量: {best_k}")
+                else:
+                    best_k = 3
+                    print(f"使用默认聚类数量: {best_k}")
+                    
+                n_clusters = best_k
+            
+            print(f"使用K-means执行聚类，k={n_clusters}...")
+            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+            cluster_labels = kmeans.fit_predict(features_np)
+            cluster_centers = kmeans.cluster_centers_
+            
+        elif algorithm.lower() == 'dbscan':
+            from sklearn.neighbors import NearestNeighbors
+            
+            print("计算最佳DBSCAN参数...")
+            nn = NearestNeighbors(n_neighbors=5)
+            nn.fit(features_np)
+            distances, _ = nn.kneighbors(features_np)
+            
+            distances = np.sort(distances[:, 4], axis=0)
+            eps = np.mean(distances) * 1.5
+            
+            min_samples = 5
+            if len(features_np) < 50:
+                min_samples = 3
+                
+            print(f"使用DBSCAN执行聚类，eps={eps:.4f}, min_samples={min_samples}...")
+            dbscan = DBSCAN(eps=eps, min_samples=min_samples)
+            cluster_labels = dbscan.fit_predict(features_np)
+            
+            n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
+            print(f"DBSCAN发现了{n_clusters}个簇和{np.sum(cluster_labels == -1)}个噪声点")
+            
+            cluster_centers = []
+            for i in range(max(cluster_labels) + 1):
+                if i in cluster_labels:
+                    mask = cluster_labels == i
+                    center = features_np[mask].mean(axis=0)
+                    cluster_centers.append(center)
+            cluster_centers = np.array(cluster_centers)
+        
+        else:
+            raise ValueError(f"不支持的聚类算法: {algorithm}，请使用'kmeans'或'dbscan'")
+        
+        unique_clusters = sorted(np.unique(cluster_labels))
+        cluster_counts = {c: np.sum(cluster_labels == c) for c in unique_clusters}
+        total_states = len(cluster_labels)
+        
+        print("\n聚类分布:")
+        for cluster in unique_clusters:
+            count = cluster_counts[cluster]
+            percentage = (count / total_states) * 100
+            if cluster == -1:
+                print(f"  噪声点: {count} 个状态 ({percentage:.1f}%)")
+            else:
+                print(f"  簇 {cluster}: {count} 个状态 ({percentage:.1f}%)")
+        
+        cluster_descriptions = {}
+        if use_text_descriptions and hasattr(self, 'text_features'):
+            print("为每个聚类寻找最匹配的文本描述...")
+            centers_tensor = torch.FloatTensor(cluster_centers).to(self.device)
+            centers_tensor = centers_tensor / centers_tensor.norm(dim=1, keepdim=True)
+            
+            centers_tensor = centers_tensor.to(self.text_features.dtype)
+            
+            with torch.no_grad():
+                similarities = centers_tensor @ self.text_features.T
+            
+            all_descriptions = []
+            if isinstance(self.descriptions[0], list):
+                for class_idx, desc_list in enumerate(self.descriptions):
+                    for desc in desc_list:
+                        all_descriptions.append((class_idx, desc))
+            else:
+                for idx, desc in enumerate(self.descriptions):
+                    all_descriptions.append((idx, desc))
+            
+            for cluster_idx in range(len(cluster_centers)):
+                if algorithm.lower() == 'dbscan' and cluster_idx >= similarities.shape[0]:
+                    continue
+                    
+                sim_scores = similarities[cluster_idx].cpu().numpy()
+                top_matches = np.argsort(-sim_scores)[:3]
+                
+                cluster_descriptions[cluster_idx] = []
+                for match_idx in top_matches:
+                    if match_idx < len(all_descriptions):
+                        class_idx, description = all_descriptions[match_idx]
+                        similarity = sim_scores[match_idx]
+                        cluster_descriptions[cluster_idx].append({
+                            'class': class_idx,
+                            'description': description,
+                            'similarity': float(similarity)
+                        })
+        
+        if visualize:
+            self.visualize_clustering(states, features_np, cluster_labels, 
+                                     cluster_descriptions, algorithm, save_path)
+        
+        return features_np, cluster_labels, cluster_descriptions
+
+    def visualize_clustering(self, states, features, cluster_labels, cluster_descriptions=None,
+                             algorithm='kmeans', save_path=None):
+        import matplotlib.pyplot as plt
+        from sklearn.decomposition import PCA
+        from collections import defaultdict
+        
+        pca = PCA(n_components=2)
+        features_2d = pca.fit_transform(features)
+        
+        unique_clusters = sorted(set(cluster_labels))
+        n_clusters = len(unique_clusters)
+        
+        plt.figure(figsize=(16, 12))
+        
+        plt.subplot(2, 2, 1)
+        colors = plt.cm.rainbow(np.linspace(0, 1, n_clusters))
+        
+        for i, cluster in enumerate(unique_clusters):
+            if cluster == -1:
+                plt.scatter(features_2d[cluster_labels == cluster, 0], 
+                           features_2d[cluster_labels == cluster, 1],
+                           c='black', marker='x', label='噪声', alpha=0.7)
+            else:
+                color_idx = i if -1 not in unique_clusters else i-1
+                plt.scatter(features_2d[cluster_labels == cluster, 0], 
+                          features_2d[cluster_labels == cluster, 1],
+                          c=[colors[color_idx]], label=f'簇 {cluster}', alpha=0.7)
+        
+        plt.title(f"使用{algorithm.upper()}的聚类结果 - PCA可视化")
+        plt.xlabel("主成分1")
+        plt.ylabel("主成分2")
+        plt.legend()
+        plt.grid(alpha=0.3)
+        
+        plt.subplot(2, 2, 2)
+        
+        cluster_stats = defaultdict(int)
+        for label in cluster_labels:
+            cluster_stats[label] += 1
+        
+        sorted_clusters = sorted(cluster_stats.items(), key=lambda x: x[1], reverse=True)
+        
+        y_pos = np.arange(len(sorted_clusters))
+        cluster_sizes = [count for _, count in sorted_clusters]
+        cluster_labels_sorted = [f'簇 {cluster}' if cluster != -1 else '噪声' 
+                               for cluster, _ in sorted_clusters]
+        
+        bars = plt.barh(y_pos, cluster_sizes)
+        
+        for i, (cluster, _) in enumerate(sorted_clusters):
+            if cluster == -1:
+                bars[i].set_color('black')
+            else:
+                color_idx = unique_clusters.index(cluster)
+                if -1 in unique_clusters:
+                    color_idx = color_idx if color_idx == 0 else color_idx-1
+                bars[i].set_color(colors[color_idx])
+        
+        plt.yticks(y_pos, cluster_labels_sorted)
+        plt.xlabel('样本数量')
+        plt.title('各簇样本分布')
+        
+        for i, bar in enumerate(bars):
+            plt.text(bar.get_width() + 1, bar.get_y() + bar.get_height()/2, 
+                    f'{cluster_sizes[i]}', va='center')
+        
+        plt.subplot(2, 2, 3)
+        plt.axis('off')
+        
+        n_examples = min(9, n_clusters)
+        cols = 3
+        rows = (n_examples + cols - 1) // cols
+        
+        max_label_len = 0
+        cluster_examples = {}
+        
+        for cluster in unique_clusters:
+            if cluster == -1:
+                continue
+            
+            mask = cluster_labels == cluster
+            cluster_states = [states[i] for i in range(len(states)) if mask[i]]
+            
+            if cluster_states:
+                cluster_features = features[mask]
+                center = np.mean(cluster_features, axis=0)
+                distances = np.linalg.norm(cluster_features - center, axis=1)
+                closest_idx = np.argmin(distances)
+                
+                cluster_examples[cluster] = cluster_states[closest_idx]
+        
+        for i, cluster in enumerate(sorted([c for c in unique_clusters if c != -1])[:n_examples]):
+            if cluster in cluster_examples:
+                plt.subplot(rows, cols, i+1)
+                try:
+                    state_rgb = self.rgb_from_state(cluster_examples[cluster])
+                    plt.imshow(state_rgb)
+                    
+                    title = f"簇 {cluster}"
+                    if cluster_descriptions and cluster in cluster_descriptions:
+                        top_desc = cluster_descriptions[cluster][0]
+                        desc_text = top_desc['description']
+                        similarity = top_desc['similarity']
+                        
+                        if len(desc_text) > 50:
+                            desc_text = desc_text[:47] + "..."
+                            
+                        title += f"\n相似: {similarity:.2f}"
+                        plt.figtext(0.5, 0.01 + i*0.03, f"簇 {cluster}: {desc_text}", 
+                                  ha="center", fontsize=8, 
+                                  bbox={"facecolor":"white", "alpha":0.8, "pad":2})
+                    
+                    plt.title(title)
+                    plt.axis('off')
+                except Exception as e:
+                    plt.text(0.5, 0.5, f"错误: {str(e)}", ha='center', va='center', 
+                           transform=plt.gca().transAxes)
+                    plt.title(f"簇 {cluster} (错误)")
+                    plt.axis('off')
+        
+        plt.suptitle(f"使用{algorithm.upper()}的聚类分析\n总样本: {len(states)}, 簇数量: {n_clusters}", 
+                    fontsize=16, y=0.98)
+        
+        if cluster_descriptions:
+            desc_text = "簇与文本描述匹配:\n"
+            
+            for cluster in sorted([c for c in unique_clusters if c != -1]):
+                if cluster in cluster_descriptions:
+                    top_match = cluster_descriptions[cluster][0]
+                    desc = top_match['description']
+                    if len(desc) > 60:
+                        desc = desc[:57] + "..."
+                    
+                    desc_text += f"簇 {cluster}: {desc} ({top_match['similarity']:.2f})\n"
+            
+            plt.figtext(0.7, 0.25, desc_text, fontsize=8, 
+                       bbox={"facecolor":"white", "alpha":0.8, "pad":5})
+        
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        
+        if save_path:
+            plt.savefig(save_path, dpi=200, bbox_inches='tight')
+            print(f"聚类可视化已保存到: {save_path}")
+            plt.close()
+        else:
+            plt.show()
+
 def create_reward_class_plot(states, rewards, visualizer, save_path, aggregation_method='max'):
     class_counts = defaultdict(int)
     class_rewards = defaultdict(list)
@@ -577,31 +882,50 @@ def create_class_summary(states, visualizer, save_path, aggregation_method='max'
 
 def get_hifno_descriptions():
     return [
-        # 类别0: 行走姿势 (单腿支撑)
+        # 类别0: 单腿支撑姿势 (包括行走和站立时的单腿状态)
         [
-            "WALKING POSITION: Robot has ONE leg on ground, with the OTHER leg clearly off ground and extended forward.",
-            "Single leg stance with one foot off the ground in mid-step.",
-            "Robot with one leg supporting body weight while the other leg is in the air.",
-            "Biped walker with asymmetric leg positions: one grounded, one suspended.",
-            "Robot in dynamic walking motion with one leg forward and one leg back."
+            "Robot with ONLY ONE leg touching the ground while other leg is completely off ground.",
+            "Single leg stance where exactly one foot contacts surface and the other is elevated.",
+            "Robot balancing on one leg only, with second leg clearly lifted from the ground.",
+            "Side view of robot with only one leg providing support, other leg raised in air.",
+            "Dynamic or static pose with single-leg support and zero contact from second leg.",
+            "Robot with one leg vertically raised upward while standing on the other leg.",
+            "Single leg balance posture with one leg extended upward at significant angle.",
+            "Robot performing leg raise with one foot planted firmly on ground for stability.",
+            "Asymmetrical leg position with one leg providing complete support and other elevated.",
+            "Robot in single-leg stance with vertical alignment and one leg lifted from ground.",
+            "Robot with exactly ONE point of leg contact with the ground surface.",
+            "Precise single leg balancing with other leg held in controlled raised position.",
+            "Robot demonstrating unipedal stance with complete elevation of non-support leg."
         ],
         
-        # 类别1: 站立姿势 (双腿支撑)
+        # 类别1: 双腿支撑姿势 (必须两腿都接触地面)
         [
-            "STANDING POSITION: Robot has BOTH legs firmly planted on ground with weight evenly distributed between them.",
-            "Double leg support with both feet touching the ground.",
-            "Balanced robot with two legs simultaneously in contact with the floor.",
-            "Stable stance with both legs supporting the body weight.",
-            "Robot standing with weight distributed equally on both legs."
+            "Robot with BOTH legs simultaneously contacting the ground surface.",
+            "Standing position with TWO feet firmly planted on ground with weight distribution.",
+            "Bipedal stance with both legs providing simultaneous support and stability.",
+            "Stationary balanced pose with two legs making complete ground contact.",
+            "Robot supported by two legs with both feet touching the floor simultaneously.",
+            "Two-leg support configuration with dual ground contact points.",
+            "Robot with weight distributed across both legs in contact with ground.",
+            "Stable standing posture requiring both feet to be touching surface.",
+            "Symmetrical leg positioning with two contact points on the ground."
         ],
         
-        # 类别2: 不稳定姿势
+        # 类别2: 不稳定姿势 (任何失衡状态，包括行走中的不稳定)
         [
-            "UNSTABLE POSITION: Robot is tilting, falling, or lying on ground with significant loss of balance.",
-            "Robot in unstable posture about to fall or already fallen.",
-            "Biped walker losing balance with irregular body orientation.",
-            "Robot tipping over or collapsed on the ground.",
-            "Unbalanced position with robot unable to maintain upright posture."
+            "Robot in UNBALANCED POSITION with visible tilt angle, on verge of falling or already fallen.",
+            "Unstable robot pose with torso leaning at extreme angle relative to ground plane.",
+            "Robot's body oriented horizontally or diagonally instead of upright, showing loss of balance.",
+            "Fallen walker with limbs splayed and torso making contact with ground surface.",
+            "Walking robot with upper body tilted forward beyond normal gait posture.",
+            "Robot with forward lean indicating beginning of balance loss during movement.",
+            "Unbalanced state with torso pitched forward and compromised stability.",
+            "Robot showing signs of stumbling with abnormal leg position and body tilt.",
+            "Biped in transition between standing and falling, with excessive momentum.",
+            "Robot with body tilted more than 20 degrees from vertical during locomotion.",
+            "Unstable stride with visible upper body sway and compromised balance.",
+            "Robot performing unstable movements with compensatory leg adjustments to prevent falling."
         ]
     ]
 
@@ -706,7 +1030,11 @@ def run_episode_visualization(
     fps=30,
     frame_indices=None,  
     aggregation_method='max',
-    save_examples=False  
+    save_examples=False,
+    use_clustering=False,
+    clustering_algorithm='kmeans',
+    n_clusters=None,
+    use_text_descriptions=True
 ):
     if save_dir and not os.path.exists(save_dir):
         os.makedirs(save_dir)
@@ -802,128 +1130,194 @@ def run_episode_visualization(
         print("没有收集到状态，无法进行可视化")
         return
     
-    classified_states = []
-    for i, state in enumerate(all_states):
-        try:
-            class_idx, results = visualizer.classify_state(state, visualizer.temperature, aggregation_method)
-            
-            if hasattr(visualizer, 'display_descriptions'):
-                if class_idx < len(visualizer.display_descriptions):
-                    top_class = visualizer.display_descriptions[class_idx]
-                else:
-                    top_class = f"Unknown Class {class_idx}"
+    if use_clustering:
+        print("\n执行无监督聚类分析...")
+        clustering_save_path = os.path.join(save_dir, f"clustering_{clustering_algorithm}.png")
+        features, cluster_labels, cluster_descriptions = visualizer.cluster_states(
+            all_states, 
+            n_clusters=n_clusters,
+            use_text_descriptions=use_text_descriptions,
+            algorithm=clustering_algorithm,
+            save_path=clustering_save_path
+        )
+        
+        print(f"聚类分析完成，结果已保存到: {clustering_save_path}")
+        
+        cluster_dirs = {}
+        unique_clusters = sorted(set(cluster_labels))
+        for cluster_idx in unique_clusters:
+            if cluster_idx == -1:
+                cluster_dir = os.path.join(save_dir, "cluster_noise")
             else:
-                top_class = f"Class {class_idx}"
-                
-            confidence = results[0][1]  # 获取最高置信度
-            classified_states.append((state, class_idx, top_class, confidence))
+                cluster_dir = os.path.join(save_dir, f"cluster_{cluster_idx}")
+            os.makedirs(cluster_dir, exist_ok=True)
+            cluster_dirs[cluster_idx] = cluster_dir
             
-            if i % 10 == 0 or i == len(all_states) - 1:
-                print(f"  分类进度: {i+1}/{len(all_states)}")
-        except Exception as e:
-            print(f"  分类状态 {i} 时出错: {e}")
-    
-    class_counts = defaultdict(int)
-    for _, _, class_name, _ in classified_states:
-        class_counts[class_name] += 1
-    
-    print("\n类别分布:")
-    if classified_states:
-        for class_name, count in sorted(class_counts.items(), key=lambda x: x[1], reverse=True):
-            print(f"  {class_name}: {count} 个状态 ({count/len(classified_states)*100:.1f}%)")
+            if cluster_descriptions and cluster_idx in cluster_descriptions:
+                with open(os.path.join(cluster_dir, "descriptions.txt"), "w") as f:
+                    for i, desc_info in enumerate(cluster_descriptions[cluster_idx]):
+                        desc = desc_info['description']
+                        similarity = desc_info['similarity']
+                        class_idx = desc_info['class']
+                        f.write(f"{i+1}. 描述: {desc}\n")
+                        f.write(f"   相似度: {similarity:.4f}, 原始类别: {class_idx}\n\n")
         
-        avg_confidence = sum(conf for _, _, _, conf in classified_states) / len(classified_states)
-        print(f"\n平均置信度: {avg_confidence:.4f}")
+        print("\n各簇样本分布:")
+        cluster_counts = defaultdict(int)
+        for cluster_idx in cluster_labels:
+            cluster_counts[cluster_idx] += 1
+        
+        for i, (state, cluster_idx) in enumerate(zip(all_states, cluster_labels)):
+            if cluster_idx in cluster_dirs:
+                state_path = os.path.join(cluster_dirs[cluster_idx], f"state_{i:03d}.png")
+                try:
+                    state_rgb = visualizer.rgb_from_state(state)
+                    plt.figure(figsize=(5, 5))
+                    plt.imshow(state_rgb)
+                    plt.axis('off')
+                    plt.tight_layout()
+                    plt.savefig(state_path)
+                    plt.close()
+                except Exception as e:
+                    print(f"  保存状态 {i} 到聚类 {cluster_idx} 时出错: {e}")
+        
+        total_samples = len(all_states)
+        for cluster_idx in sorted(cluster_counts.keys()):
+            count = cluster_counts[cluster_idx]
+            percentage = (count / total_samples) * 100
+            if cluster_idx == -1:
+                print(f"  噪声点: {count} 个样本 ({percentage:.1f}%)")
+            else:
+                print(f"  簇 {cluster_idx}: {count} 个样本 ({percentage:.1f}%)")
+        
+        print(f"聚类样本已保存到各个聚类目录中")
+    
     else:
-        print("  警告: 没有成功分类任何状态!")
-    
-    if save_dir and classified_states:
-        reward_plot_path = os.path.join(save_dir, "reward_by_class.png")
-        create_reward_class_plot(all_states, all_rewards, visualizer, reward_plot_path, aggregation_method)
-        print(f"奖励-类别关系图已保存到: {reward_plot_path}")
-        
-        class_summary_path = os.path.join(save_dir, "class_examples.png")
-        create_class_summary(all_states, visualizer, class_summary_path, aggregation_method)
-        print(f"类别示例汇总已保存到: {class_summary_path}")
-    
-    tsne_path = os.path.join(save_dir, "tsne_visualization.png")
-    try:
-        visualizer.visualize_tsne(all_states, tsne_path, aggregation_method)
-        print(f"t-SNE可视化已保存到: {tsne_path}")
-    except Exception as e:
-        print(f"创建t-SNE可视化时出错: {e}")
-    
-    class_dirs = {}
-    if hasattr(visualizer, 'display_descriptions'):
-        for i in range(len(visualizer.display_descriptions)):
-            class_dir = os.path.join(save_dir, f"class_{i}")
-            os.makedirs(class_dir, exist_ok=True)
-            class_dirs[i] = class_dir
-            
-            with open(os.path.join(class_dir, "descriptions.txt"), "w") as f:
-                if hasattr(visualizer, 'descriptions') and isinstance(visualizer.descriptions[0], list):
-                    for j, desc in enumerate(visualizer.descriptions[i]):
-                        f.write(f"{j+1}. {desc}\n")
-                else:
-                    f.write(visualizer.display_descriptions[i])
-    
-    for i, (state, class_idx, class_name, confidence) in enumerate(classified_states):
-        if class_idx in class_dirs:
-            state_path = os.path.join(class_dirs[class_idx], f"state_{i:03d}_conf_{confidence:.3f}.png")
+        classified_states = []
+        for i, state in enumerate(all_states):
             try:
-                visualizer.visualize_classification(state, state_path, aggregation_method)
-            except Exception as e:
-                print(f"  保存状态 {i} 到类别 {class_idx} 时出错: {e}")
-    
-    print(f"分类状态已保存到各个类别目录中")
-    
-    if save_examples and save_dir and classified_states:
-        examples_dir = os.path.join(save_dir, "examples")
-        if not os.path.exists(examples_dir):
-            os.makedirs(examples_dir)
-        
-        class_examples = defaultdict(list)
-        for state, class_idx, class_name, confidence in classified_states:
-            if len(class_examples[class_name]) < 5:  
-                class_examples[class_name].append((state, confidence))
-        
-        for class_name, examples in class_examples.items():
-            class_dir = os.path.join(examples_dir, class_name.replace(" ", "_"))
-            if not os.path.exists(class_dir):
-                os.makedirs(class_dir)
+                class_idx, results = visualizer.classify_state(state, visualizer.temperature, aggregation_method)
                 
-            for i, (state, confidence) in enumerate(examples):
-                example_path = os.path.join(class_dir, f"example_{i+1}_conf_{confidence:.3f}.png")
-                visualizer.visualize_classification(state, example_path, aggregation_method)
+                if hasattr(visualizer, 'display_descriptions'):
+                    if class_idx < len(visualizer.display_descriptions):
+                        top_class = visualizer.display_descriptions[class_idx]
+                    else:
+                        top_class = f"Unknown Class {class_idx}"
+                else:
+                    top_class = f"Class {class_idx}"
+                    
+                confidence = results[0][1]
+                classified_states.append((state, class_idx, top_class, confidence))
+                
+                if i % 10 == 0 or i == len(all_states) - 1:
+                    print(f"  分类进度: {i+1}/{len(all_states)}")
+            except Exception as e:
+                print(f"  分类状态 {i} 时出错: {e}")
         
-        print(f"类别示例已保存到: {examples_dir}")
-    
-    if save_video and classified_states:
-        video_path = os.path.join(save_dir, "episode_visualization.mp4")
+        class_counts = defaultdict(int)
+        for _, _, class_name, _ in classified_states:
+            class_counts[class_name] += 1
         
-        frames = []
-        for i, (state, _, _, _) in enumerate(classified_states):
-            vis_result_path = os.path.join(save_dir, f"temp_frame_{i:04d}.png")
-            visualizer.visualize_classification(state, vis_result_path, aggregation_method)
+        print("\n类别分布:")
+        if classified_states:
+            for class_name, count in sorted(class_counts.items(), key=lambda x: x[1], reverse=True):
+                print(f"  {class_name}: {count} 个状态 ({count/len(classified_states)*100:.1f}%)")
             
-            frame = cv2.imread(vis_result_path)
-            frames.append(frame)
-            
-            os.remove(vis_result_path)
-        
-        if frames:
-            height, width, _ = frames[0].shape
-            
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            video_writer = cv2.VideoWriter(video_path, fourcc, fps, (width, height))
-            
-            for frame in frames:
-                video_writer.write(frame)
-            
-            video_writer.release()
-            
-            print(f"可视化视频已保存到: {video_path}")
+            avg_confidence = sum(conf for _, _, _, conf in classified_states) / len(classified_states)
+            print(f"\n平均置信度: {avg_confidence:.4f}")
         else:
-            print("没有帧可用于创建视频")
+            print("  警告: 没有成功分类任何状态!")
+        
+        if save_dir and classified_states:
+            reward_plot_path = os.path.join(save_dir, "reward_by_class.png")
+            create_reward_class_plot(all_states, all_rewards, visualizer, reward_plot_path, aggregation_method)
+            print(f"奖励-类别关系图已保存到: {reward_plot_path}")
             
-    return all_states, all_rewards, classified_states
+            class_summary_path = os.path.join(save_dir, "class_examples.png")
+            create_class_summary(all_states, visualizer, class_summary_path, aggregation_method)
+            print(f"类别示例汇总已保存到: {class_summary_path}")
+        
+        tsne_path = os.path.join(save_dir, "tsne_visualization.png")
+        try:
+            visualizer.visualize_tsne(all_states, tsne_path, aggregation_method)
+            print(f"t-SNE可视化已保存到: {tsne_path}")
+        except Exception as e:
+            print(f"创建t-SNE可视化时出错: {e}")
+        
+        class_dirs = {}
+        if hasattr(visualizer, 'display_descriptions'):
+            for i in range(len(visualizer.display_descriptions)):
+                class_dir = os.path.join(save_dir, f"class_{i}")
+                os.makedirs(class_dir, exist_ok=True)
+                class_dirs[i] = class_dir
+                
+                with open(os.path.join(class_dir, "descriptions.txt"), "w") as f:
+                    if hasattr(visualizer, 'descriptions') and isinstance(visualizer.descriptions[0], list):
+                        for j, desc in enumerate(visualizer.descriptions[i]):
+                            f.write(f"{j+1}. {desc}\n")
+                    else:
+                        f.write(visualizer.display_descriptions[i])
+        
+        for i, (state, class_idx, class_name, confidence) in enumerate(classified_states):
+            if class_idx in class_dirs:
+                state_path = os.path.join(class_dirs[class_idx], f"state_{i:03d}_conf_{confidence:.3f}.png")
+                try:
+                    visualizer.visualize_classification(state, state_path, aggregation_method)
+                except Exception as e:
+                    print(f"  保存状态 {i} 到类别 {class_idx} 时出错: {e}")
+        
+        print(f"分类状态已保存到各个类别目录中")
+        
+        if save_examples and save_dir and classified_states:
+            examples_dir = os.path.join(save_dir, "examples")
+            if not os.path.exists(examples_dir):
+                os.makedirs(examples_dir)
+            
+            class_examples = defaultdict(list)
+            for state, class_idx, class_name, confidence in classified_states:
+                if len(class_examples[class_name]) < 5:  
+                    class_examples[class_name].append((state, confidence))
+            
+            for class_name, examples in class_examples.items():
+                class_dir = os.path.join(examples_dir, class_name.replace(" ", "_"))
+                if not os.path.exists(class_dir):
+                    os.makedirs(class_dir)
+                    
+                for i, (state, confidence) in enumerate(examples):
+                    example_path = os.path.join(class_dir, f"example_{i+1}_conf_{confidence:.3f}.png")
+                    visualizer.visualize_classification(state, example_path, aggregation_method)
+            
+            print(f"类别示例已保存到: {examples_dir}")
+        
+        if save_video and classified_states:
+            video_path = os.path.join(save_dir, "episode_visualization.mp4")
+            
+            frames = []
+            for i, (state, _, _, _) in enumerate(classified_states):
+                vis_result_path = os.path.join(save_dir, f"temp_frame_{i:04d}.png")
+                visualizer.visualize_classification(state, vis_result_path, aggregation_method)
+                
+                frame = cv2.imread(vis_result_path)
+                frames.append(frame)
+                
+                os.remove(vis_result_path)
+            
+            if frames:
+                height, width, _ = frames[0].shape
+                
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                video_writer = cv2.VideoWriter(video_path, fourcc, fps, (width, height))
+                
+                for frame in frames:
+                    video_writer.write(frame)
+                
+                video_writer.release()
+                
+                print(f"可视化视频已保存到: {video_path}")
+            else:
+                print("没有帧可用于创建视频")
+    
+    if use_clustering:
+        return all_states, all_rewards, cluster_labels
+    else:
+        return all_states, all_rewards, classified_states
