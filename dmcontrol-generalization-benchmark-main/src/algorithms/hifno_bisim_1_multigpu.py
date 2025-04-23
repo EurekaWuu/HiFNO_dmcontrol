@@ -288,7 +288,7 @@ class HiFNOBisimAgent(SAC, nn.Module):
             self.clip_classifier = CLIPClassifier(self.descriptions, device=device)
         
 
-        with torch.cuda.amp.autocast(enabled=True):  # 启用混合精度
+        with torch.cuda.amp.autocast(enabled=False):  # 启用混合精度
             state_features = self.encoder(obs)
         
         # 获取最后一帧作为当前状态
