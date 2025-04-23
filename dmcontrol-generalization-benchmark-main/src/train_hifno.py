@@ -184,6 +184,14 @@ if __name__ == '__main__':
 '''
 CUDA_VISIBLE_DEVICES=3 python train_hifno.py --algorithm hifno --hidden_dim 128 --domain_name walker --task_name walk --seed 1 --lr 1e-4 --embed_dim 256 --batch_size 32
 CUDA_VISIBLE_DEVICES=6 python train_hifno.py --algorithm hifno_bisim --hidden_dim 128 --domain_name walker --task_name walk --seed 1 --lr 1e-4 --embed_dim 256 --batch_size 32
-CUDA_VISIBLE_DEVICES=7 python train_hifno.py --algorithm hifno_bisim_1 --hidden_dim 96 --domain_name walker --task_name walk --seed 1 --lr 1e-4 --embed_dim 96 --batch_size 16 --lambda_SC 0.5 --lambda_clip 0.5 --clip_loss_weight 0.5
+CUDA_VISIBLE_DEVICES=7 python train_hifno.py --algorithm hifno_bisim_1 --hidden_dim 128 --domain_name walker --task_name walk --seed 1 --lr 1e-4 --embed_dim 128 --batch_size 24 --lambda_SC 0.5 --lambda_clip 0.2 --clip_loss_weight 0.3
 
+# 只使用语义类内一致性损失
+CUDA_VISIBLE_DEVICES=6 python train_hifno.py --algorithm hifno_bisim_1 --hidden_dim 128 --domain_name walker --task_name walk --seed 1 --lr 1e-4 --embed_dim 128 --batch_size 24 --use_sc_loss True --use_clip_bisim_loss False --lambda_SC 1 --clip_loss_weight 0.4
+
+# 只使用CLIP引导的双模拟损失
+CUDA_VISIBLE_DEVICES=4 python train_hifno.py --algorithm hifno_bisim_1 --hidden_dim 128 --domain_name walker --task_name walk --seed 1 --lr 1e-4 --embed_dim 128 --batch_size 24 --use_sc_loss False --use_clip_bisim_loss True --lambda_clip 1 --clip_loss_weight 0.4
+
+# 同时使用两种损失
+CUDA_VISIBLE_DEVICES=4 python train_hifno.py --algorithm hifno_bisim_1 --use_sc_loss True --use_clip_bisim_loss True --lambda_SC 0.5 --lambda_clip 0.5 --batch_size 16
 '''

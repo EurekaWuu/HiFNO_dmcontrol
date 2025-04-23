@@ -3,7 +3,6 @@
 
 export CUDA_VISIBLE_DEVICES=0,2,3,4
 
-
 GPU_COUNT=$(echo $CUDA_VISIBLE_DEVICES | tr -cd ',' | wc -c)
 GPU_COUNT=$((GPU_COUNT + 1))
 echo "检测到 $GPU_COUNT 个可用GPU"
@@ -26,7 +25,7 @@ export TORCHELASTIC_ERROR_FILE="/tmp/torch_elastic_error.json"
 #     --depth 4 \
 #     --patch_size 4
 
-# hifno_bisim_1_multigpu  同时使用两种损失
+# 同时使用两种损失
 torchrun \
     --nproc_per_node=$GPU_COUNT \
     --master_port=29500 \
@@ -44,11 +43,11 @@ torchrun \
     --patch_size 4 \
     --use_sc_loss True \
     --use_clip_bisim_loss True \
-    --lambda_SC 0.5 \
-    --lambda_clip 0.5 \
-    --clip_loss_weight 0.5
+    --lambda_SC 0.4 \
+    --lambda_clip 0.2 \
+    --clip_loss_weight 0.1
 
-# hifno_bisim_1_multigpu  只使用语义类内一致性损失
+# 只使用语义类内一致性损失
 # torchrun \
 #     --nproc_per_node=$GPU_COUNT \
 #     --master_port=29501 \
@@ -69,7 +68,7 @@ torchrun \
 #     --lambda_SC 1.0 \
 #     --clip_loss_weight 0.4
 
-# hifno_bisim_1_multigpu  只使用CLIP引导的双模拟损失
+# 使用CLIP引导的双模拟损失
 # torchrun \
 #     --nproc_per_node=$GPU_COUNT \
 #     --master_port=29502 \
