@@ -1,0 +1,42 @@
+category,text
+ideal_prompt,humanoid robot walking with perfect balance
+ideal_prompt,robot maintaining upright posture while walking
+ideal_prompt,humanoid with stable gait and controlled movement
+ideal_prompt,robot walking with optimal joint coordination
+ideal_prompt,humanoid maintaining center of mass over feet
+ideal_prompt,robot with efficient and balanced walking motion
+ideal_prompt,humanoid with symmetrical leg movements while walking
+ideal_prompt,robot with controlled and smooth motion
+ideal_prompt,humanoid with proper weight shifting during walk
+ideal_prompt,robot with stability in dynamic walking motion
+negative_prompt,robot sitting idle on a chair
+negative_prompt,robot standing completely still
+negative_prompt,broken robot with damaged legs
+negative_prompt,robot without legs or mobility
+negative_prompt,robot falling and losing balance
+negative_prompt,robot with unstable and jerky movements
+robot_prompt,Describe a humanoid robot's walking posture, focusing on ankle flexion, knee bend, and hip joint positions:
+robot_prompt,Write a short description of robot walking stance, specifically mentioning thigh, calf, and foot positions:
+robot_prompt,Explain how the robot's ankle, knee and hip joints are angled during walking (max 15 words):
+robot_prompt,Describe the specific thigh and shin positions of a walking humanoid robot:
+robot_prompt,Detail the joint angles between ankle, knee, and hip of a humanoid robot in walking motion:
+robot_prompt,Describe how the robot's feet, ankles, and leg joints coordinate during a walking stride:
+robot_prompt,Explain the positioning of the robot's thighs, calves, and feet during its walking cycle:
+backup_description,Robot with only one leg touching the ground while other leg is suspended in mid-stride motion.
+backup_description,Humanoid with left leg planted firmly while right leg swings forward with bent knee.
+backup_description,Robot balancing on one leg only, with second leg clearly lifted from the ground.
+backup_description,Humanoid with left knee raised high and right leg extended backward in walking motion.
+backup_description,Robot with one foot firmly planted while other leg is mid-stride with bent knee joint.
+backup_description,Bipedal robot in mid-walking pose with single leg support and other leg in swing phase.
+backup_description,Robot maintaining balance on right leg while left leg executes forward stepping motion.
+backup_description,Humanoid with knees bent at optimal walking angle and one leg lifted from ground.
+backup_description,Robot demonstrating controlled gait with precise joint angles in single-leg stance.
+backup_description,Robot with both legs simultaneously contacting the ground in double-support phase.
+backup_description,Humanoid robot in stable standing posture with weight distributed evenly on both feet.
+backup_description,Robot with both knees slightly bent and feet parallel on ground in ready position.
+evolve_backup,robot walking with perfectly balanced posture
+evolve_backup,humanoid balancing precisely during walking motion
+evolve_backup,robot with optimal joint coordination in stride
+evolve_backup,humanoid maintaining center of mass while walking
+evolve_backup,robot with symmetrical leg movements in balanced gait
+evolve_backup,humanoid with stable and controlled walking motion 
