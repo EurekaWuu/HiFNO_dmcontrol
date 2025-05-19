@@ -39,4 +39,35 @@ evolve_backup,humanoid balancing precisely during walking motion
 evolve_backup,robot with optimal joint coordination in stride
 evolve_backup,humanoid maintaining center of mass while walking
 evolve_backup,robot with symmetrical leg movements in balanced gait
-evolve_backup,humanoid with stable and controlled walking motion 
+evolve_backup,humanoid with stable and controlled walking motion
+generation_prompt,"Generate a description of a humanoid robot's walking posture, focusing on specific leg movements, joint angles, and balance."
+evolution_prompt,"Generate a new walking posture description similar to: ""[BEST_DESCRIPTION]"""
+requirements,"- Description MUST be between 10-30 words only
+- MUST use exactly the format: ""[Type of robot] with [specific leg position] in [movement/balance state]""
+- MUST include at least 3 of these keywords: [leg, knee, joint, foot, ankle, posture, stance, balance, gait]
+- MUST focus ONLY on walking posture and leg movements
+- NO technical terms, URLs, or unnecessary details
+- NO emojis or special characters
+- NO code syntax or symbols
+- Use plain English text with standard punctuation"
+examples_intro,"EXAMPLES of good descriptions:"
+instruction,"Your description MUST follow all requirements above. Violations will be rejected.
+
+Description: "
+keyword_guided_prompt,"Generate a description of a robot's walking posture that MUST use these keywords: [KEYWORDS]."
+keyword_guided_prompt,"Create a detailed walking stance description for a robot that incorporates all of these keywords: [KEYWORDS]."
+keyword_guided_prompt,"Write a walking posture description focused specifically on these aspects: [KEYWORDS]."
+keyword_guided_prompt,"Compose a robot walking description that highlights these key elements: [KEYWORDS]."
+keyword_guided_prompt,"Describe a robot's walking motion with emphasis on these specific concepts: [KEYWORDS]."
+keyword_evolution_prompt,"Evolve this description: ""[BEST_DESCRIPTION]"" into a new description that emphasizes these keywords: [KEYWORDS]."
+keyword_evolution_prompt,"Based on: ""[BEST_DESCRIPTION]"", generate a new description that must incorporate these keywords: [KEYWORDS]."
+keyword_evolution_prompt,"Transform ""[BEST_DESCRIPTION]"" into a new description focused on these elements: [KEYWORDS]."
+keyword_evolution_prompt,"Create a variant of ""[BEST_DESCRIPTION]"" that highlights these specific aspects: [KEYWORDS]."
+format_guide,"FORMAT INSTRUCTIONS:
+1. MUST start with ""Robot"", ""Humanoid"", or ""Bipedal robot""
+2. MUST include specific leg position details (knees, feet, joints)
+3. MUST include balance or walking state
+4. MUST be 10-25 words only
+5. MUST follow pattern: ""[Robot type] with [specific leg position] in [movement/balance state]""
+6. NO technical terms, URLs, or code
+7. NO numbers or irrelevant content" 
