@@ -19,6 +19,9 @@ import re
 import random
 import tempfile
 import subprocess
+import socket
+import base64
+import io
 
 
 try:
@@ -531,6 +534,17 @@ def visualize_evolution(evolution_history, fitness_history, save_path=None):
 
 def parse_args():
     parser = argparse.ArgumentParser(description='概念自适应与演化测试工具')
+    
+    def str2bool(v):
+        if isinstance(v, bool):
+            return v
+        if v.lower() in ('yes', 'true', 't', 'y', '1'):
+            return True
+        elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+            return False
+        else:
+            raise argparse.ArgumentTypeError('Boolean value expected.')
+    
     parser.add_argument('--domain_name', type=str, default='walker',
                         help='环境域名')
     parser.add_argument('--task_name', type=str, default='walk',
@@ -577,15 +591,15 @@ def parse_args():
     parser.add_argument('--semantic_score_type', type=str, default='raw',
                       choices=['raw', 'shifted'],
                       help='语义得分计算方式: raw=直接使用，shifted=偏移增强')
-    parser.add_argument('--keywords_filter', type=bool, default=True,
-                      help='是否使用关键词过滤')
+    parser.add_argument('--keywords_filter', type=str2bool, default=True,
+                      help='是否使用关键词过滤（True/False）')
     
-    parser.add_argument('--use_avg_similarity', type=bool, default=True,
-                      help='使用平均相似度计算适应度')
-    parser.add_argument('--use_state_consistency', type=bool, default=True,
-                      help='使用状态一致性计算适应度')
-    parser.add_argument('--use_action_consistency', type=bool, default=True,
-                      help='使用动作一致性计算适应度')
+    parser.add_argument('--use_avg_similarity', type=str2bool, default=True,
+                      help='使用平均相似度计算适应度（True/False）')
+    parser.add_argument('--use_state_consistency', type=str2bool, default=True,
+                      help='使用状态一致性计算适应度（True/False）')
+    parser.add_argument('--use_action_consistency', type=str2bool, default=True,
+                      help='使用动作一致性计算适应度（True/False）')
     
     parser.add_argument('--avg_similarity_weight', type=float, default=0.4,
                       help='平均相似度权重')
@@ -615,8 +629,8 @@ def parse_args():
     parser.add_argument('--gpt2_repetition_penalty', type=float, default=1.2,
                       help='语言模型生成时的重复惩罚系数')
     
-    parser.add_argument('--use_keyword_guided_generation', type=bool, default=True,
-                      help='是否使用关键词引导生成')
+    parser.add_argument('--use_keyword_guided_generation', type=str2bool, default=True,
+                      help='是否使用关键词引导生成（True/False）')
     parser.add_argument('--keyword_groups_focus', type=str, nargs='+', default=None,
                       help='要关注的关键词组列表，如"机器人类型 关节结构 运动特征"')
     parser.add_argument('--min_keywords', type=int, default=3,
@@ -629,7 +643,8 @@ def parse_args():
     parser.add_argument('--llava_prompt', type=str, 
                        default="Describe what you see in this image, focusing on the robot's posture and leg positions.",
                        help='发送给LLaVA的图像描述提示')
-    
+    parser.add_argument('--use_clean_description', type=str2bool, default=True,
+                      help='是否对生成的描述使用clean_description清洗（True/False）')
     return parser.parse_args()
 
 def collect_state_representations(states, num_samples=None):
@@ -854,17 +869,26 @@ def generate_image_captions(states, device=None, max_captions=3):
     
     for state in sample_states:
         # 处理状态数据为PIL图像
-        if not isinstance(state, np.ndarray):
-            state = np.array(state)
-            
-        if state.shape[0] > 3:
-            state = state[-3:]
-            
-        image = Image.fromarray((state.transpose(1, 2, 0) * 255).astype(np.uint8))
+        if hasattr(state, '_frames') or type(state).__name__ == 'LazyFrames':
+            arr = np.array(state)
+            if arr.shape[0] > 3:
+                arr = arr[-3:]
+            img = Image.fromarray((arr.transpose(1, 2, 0) * 255).astype(np.uint8))
+        elif isinstance(state, np.ndarray):
+            arr = state
+            if arr.shape[0] > 3:
+                arr = arr[-3:]
+            img = Image.fromarray((arr.transpose(1, 2, 0) * 255).astype(np.uint8))
+        elif isinstance(state, Image.Image):
+            img = state.convert('RGB')
+        else:
+            print(f"[BLIP] 不支持的状态类型: {type(state)}")
+            captions.append(f"[ERROR] 不支持的状态类型: {type(state)}")
+            continue
         
         # 使用BLIP生成描述
         try:
-            image_resized = image.resize((224, 224), Image.BICUBIC)
+            image_resized = img.resize((224, 224), Image.BICUBIC)
             
             
             inputs = processor(image_resized, return_tensors="pt", do_resize=False).to(device)
@@ -882,9 +906,9 @@ def generate_image_captions(states, device=None, max_captions=3):
         except Exception as e:
             print(f"  生成描述时出错: {e}")
             try:
-                if image.mode != 'RGB':
-                    image = image.convert('RGB')
-                image_resized = image.resize((224, 224), Image.BICUBIC)
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                image_resized = img.resize((224, 224), Image.BICUBIC)
                 
                 image_array = np.array(image_resized).astype(np.float32) / 255.0
                 image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).unsqueeze(0).to(device)
@@ -1073,60 +1097,80 @@ def process_image_with_llava_subprocess(image, prompt=None, model_path=None, lla
         print(f"LLaVA处理图像出错: {e}")
         return f"[ERROR] LLaVA处理图像出错: {e}"
 
-def process_states_with_llava(states, model_path=None, llava_env_path=None, max_samples=3, prompt=None):
+def process_states_with_llava(states, model_path=None, llava_env_path=None, max_samples=3, prompt=None, host='localhost', port=7788):
     if not states:
         print("警告: 没有提供状态数据")
         return ["[ERROR] 没有提供状态数据"]
-        
-    print(f"准备使用LLaVA处理{len(states)}个状态图像...")
-    
-    # 处理所有状态图像，不进行采样
-    sample_states = states
-    
+    # if not prompt:
+    # prompt = "Question: Describe the robot's posture in this image.\nAnswer:"  
+    prompt = "Describe the state of the robot's limbs and joints as it moves in this figure"  
+
     captions = []
-    print(f"开始逐个处理{len(sample_states)}个状态图像...")
-    
-    if not prompt:
-        prompt = (
-            "Describe the robot in this image with 15-30 words. "
-            "Focus on: (1) robot type (humanoid, bipedal, etc.), "
-            "(2) leg positions and angles, "
-            "(3) walking motion or stance, "
-            "(4) balance state. "
-            "Use format: '[Robot type] with [leg position details] in [movement state]'"
-        )
-    
-    for i, state in enumerate(sample_states):
-        print(f"处理图像 {i+1}/{len(sample_states)}...")
+    for i, state in enumerate(states):
+        print(f"[LLaVA-Socket] 处理图像 {i+1}/{len(states)}...")
+        # 转为 PIL.Image
+        if hasattr(state, '_frames') or type(state).__name__ == 'LazyFrames':
+            arr = np.array(state)
+            if arr.shape[0] > 3:
+                arr = arr[-3:]
+            img = Image.fromarray((arr.transpose(1, 2, 0) * 255).astype(np.uint8))
+        elif isinstance(state, np.ndarray):
+            arr = state
+            if arr.shape[0] > 3:
+                arr = arr[-3:]
+            img = Image.fromarray((arr.transpose(1, 2, 0) * 255).astype(np.uint8))
+        elif isinstance(state, Image.Image):
+            img = state.convert('RGB')
+        else:
+            print(f"[LLaVA-Socket] 不支持的状态类型: {type(state)}")
+            captions.append(f"[ERROR] 不支持的状态类型: {type(state)}")
+            continue
+        # 编码为 base64
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+        payload = {
+            "prompt": prompt,
+            "image_base64": img_base64
+        }
         try:
-            if state is None:
-                print(f"  状态 {i+1} 为None")
-                captions.append(f"[ERROR] 状态 {i+1} 为None")
-                continue
-            
-            description = process_image_with_llava_subprocess(
-                state, 
-                prompt=prompt,
-                model_path=model_path,
-                llava_env_path=llava_env_path
-            )
-            
-            cleaned_description = clean_description(
-                description, 
-                keywords_filter=True,
-                strict_format=False,  
-                word_limit=(8, 60)  
-            )
-            
-            captions.append(cleaned_description)
-            print(f"  获取描述: \"{cleaned_description[:50]}{'...' if len(cleaned_description) > 50 else ''}\"")
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(30)  # 设置30秒超时
+                s.connect((host, port))
+                s.sendall(json.dumps(payload).encode())
+                s.shutdown(socket.SHUT_WR)
+                
+                
+                chunks = []
+                bytes_received = 0
+                while True:
+                    try:
+                        chunk = s.recv(8192)  
+                        if not chunk:
+                            break
+                        bytes_received += len(chunk)
+                        chunks.append(chunk)
+                        if bytes_received > 1024*1024: 
+                            break
+                    except socket.timeout:
+                        print("[LLaVA-Socket] 接收超时，可能已接收到全部数据")
+                        break
+                
+                response = b''.join(chunks)
+                
+                resp_str = response.decode()
+                try:
+                    resp_json = json.loads(resp_str)
+                    desc = resp_json.get('description', '')
+                    if not desc.strip():
+                        desc = "[ERROR] 服务器返回空描述"
+                except Exception as e:
+                    print(f"[LLaVA-Socket] 响应解析失败: {e}, 原始: {resp_str[:200]}...")
+                    desc = f"[ERROR] 响应解析失败: {e}"
+                captions.append(desc)
+                print(f"[LLaVA-Socket] 获取描述 ({len(desc)}字符): {desc}")
         except Exception as e:
-            import traceback
-            error_trace = traceback.format_exc()
-            error_msg = f"[ERROR] LLaVA处理图像失败: {str(e)}"
-            print(f"LLaVA处理图像异常: {e}")
-            print(f"错误堆栈: {error_trace}")
-            captions.append(error_msg)
-    
-    print(f"LLaVA图像处理完成，共生成{len(captions)}个描述")
+            print(f"[LLaVA-Socket] socket 通信异常: {e}")
+            captions.append(f"[ERROR] socket 通信异常: {e}")
+    print(f"[LLaVA-Socket] 批量处理完成，共生成{len(captions)}个描述")
     return captions

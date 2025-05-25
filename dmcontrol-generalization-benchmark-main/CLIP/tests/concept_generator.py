@@ -48,10 +48,12 @@ class ConceptGenerator:
         
         model_name = self.args.model_name if hasattr(self.args, 'model_name') else "未指定"
         
+    
         if self.language_model_path is None:
             self.language_model_path = MODEL_PATHS.get(model_name, model_name)
         
         print(f"使用预训练语言模型: {model_name} ({self.language_model_path})")
+        
         
         if "llava" in model_name.lower() or "llava" in (self.language_model_path or "").lower():  
             self.model_type = "llava"
@@ -75,6 +77,7 @@ class ConceptGenerator:
 
         self.keywords = self._init_keywords()
         
+        # 初始化关键词组
         self.keyword_groups = init_keyword_groups()
         print(f"已初始化{len(self.keyword_groups)}个关键词组")
         
@@ -147,6 +150,7 @@ class ConceptGenerator:
                 from transformers import LlamaTokenizer, LlamaForCausalLM
                 print(f"[Llama] 正在加载 {self.language_model_path}...")
                 
+                
                 is_local_path = os.path.exists(self.language_model_path)
                 if is_local_path:
                     print(f"检测到本地路径: {self.language_model_path}")
@@ -216,13 +220,14 @@ class ConceptGenerator:
         self.backup_descriptions = []
         self.evolve_backup_descriptions = []
         
-
+        # 新增模板类别
         self.generation_prompts = []
         self.evolution_prompts = []
         self.requirements_texts = []
         self.examples_intros = []
         self.instruction_texts = []
         
+        # 关键词引导相关模板
         self.keyword_guided_prompts = []
         self.keyword_evolution_prompts = []
         
@@ -243,6 +248,7 @@ class ConceptGenerator:
                         self.backup_descriptions.append(text)
                     elif category == 'evolve_backup':
                         self.evolve_backup_descriptions.append(text)
+                    
                     elif category == 'generation_prompt':
                         self.generation_prompts.append(text)
                     elif category == 'evolution_prompt':
@@ -253,10 +259,12 @@ class ConceptGenerator:
                         self.examples_intros.append(text)
                     elif category == 'instruction':
                         self.instruction_texts.append(text)
+                    
                     elif category == 'keyword_guided_prompt':
                         self.keyword_guided_prompts.append(text)
                     elif category == 'keyword_evolution_prompt':
                         self.keyword_evolution_prompts.append(text)
+                    
                     elif category == 'format_guide':
                         self.format_guides.append(text)
             
@@ -267,7 +275,7 @@ class ConceptGenerator:
             if not self.keyword_evolution_prompts:
                 self.keyword_evolution_prompts.append("Evolve this description: \"[BEST_DESCRIPTION]\" into a new description that emphasizes these keywords: [KEYWORDS].")
             
-            # 检查必要模板是否加载，如果没有则提供默认值
+            # 检查模板是否加载，如果没有则提供默认值
             if not self.generation_prompts:
                 self.generation_prompts.append("Generate a description of a humanoid robot's walking posture, focusing on specific leg movements, joint angles, and balance.")
                 
@@ -291,7 +299,7 @@ class ConceptGenerator:
                 self.instruction_texts.append("Your description MUST follow all requirements above. Violations will be rejected.\n\nDescription: ")
                 
             if not self.ideal_prompts or not self.negative_prompts or not self.robot_prompts:
-                raise ValueError("CSV模板文件格式错误，必须包含ideal_prompt、negative_prompt和robot_prompt类别的文本")
+                raise ValueError("CSV模板文件格式错误：必须包含ideal_prompt、negative_prompt和robot_prompt类别的文本")
                 
             print(f"模板加载完成：共{len(self.ideal_prompts)}个理想模板")
             
@@ -312,7 +320,7 @@ class ConceptGenerator:
         # 禁用相似度过滤功能，始终返回False
         return False
         
-        # 原始代码
+        # 原始代码（已注释）
         """
         threshold = threshold or self.args.similarity_threshold
         return _similarity_too_high(new_desc, existing_descs, self.clip_model, self.device, threshold, self.cached_features)
@@ -396,13 +404,15 @@ class ConceptGenerator:
         return fitness
 
     def generate_text_with_llava(self, prompt, num_candidates=1, states=None):
+        """使用LLaVA模型通过子进程方式生成文本描述
+        
+        """
         # 检查是否有环境状态数据可用
         print(f"\n=== LLaVA文本生成开始 ===")
         print(f"请求生成{num_candidates}个候选描述")
         
         if states is None or len(states) == 0:
-            print(f"未提供有效的状态数据，将使用备用描述")
-            # 从备用描述中随机选择
+            print(f"无有效的状态数据，使用备用描述")
             if len(self.backup_descriptions) > 0:
                 backup_indices = list(range(len(self.backup_descriptions)))
                 random.shuffle(backup_indices)
@@ -419,29 +429,29 @@ class ConceptGenerator:
                 print(f"无可用备用描述，使用默认描述: {default_desc}")
                 return [default_desc] * num_candidates
         
+        
         from concept_utils import process_states_with_llava
+        
         
         llava_prompt = prompt
         print(f"使用提示: \"{prompt[:100]}{'...' if len(prompt) > 100 else ''}\"")
         
+        
         llava_env_path = self.args.llava_env_path if hasattr(self.args, 'llava_env_path') else None
         
         if llava_env_path and not os.path.exists(llava_env_path):
-            print(f"指定的LLaVA环境路径不存在: {llava_env_path}，将使用默认Python")
+            print(f"警告: 指定的LLaVA环境路径不存在: {llava_env_path}，将使用默认Python")
             llava_env_path = "python"
         
         
         model_path = None
         if self.model_type == "llava":
-            # 如果当前模型就是LLaVA，直接使用其路径
             model_path = self.language_model_path
             print(f"使用当前LLaVA模型路径: {model_path}")
         else:
-            # 否则从MODEL_PATHS中查找LLaVA模型路径
             model_path = MODEL_PATHS.get("llava-1.5-7b")
             print(f"当前不是LLaVA模型，使用默认LLaVA模型: {model_path}")
         
-        # 调用process_states_with_llava函数处理图像并生成描述
         try:
             print(f"开始LLaVA子进程处理图像...")
             descriptions = process_states_with_llava(
@@ -506,12 +516,12 @@ class ConceptGenerator:
 
     def generate_initial_concepts(self, prompt=None, n=10, n_variations=3, states=None):
         if len(self.backup_descriptions) < n * n_variations:
-            print("备用描述数量不足，可能需要重复使用")
+            print("警告: 备用描述数量不足，可能需要重复使用")
         
         concept_set = {}
         
         if not prompt:
-            # 使用CSV中的模板构建提示
+            # 始终使用CSV中的模板构建提示
             # 随机选择一个生成提示
             generation_prompt = random.choice(self.generation_prompts)
             # 随机选择一个要求文本
@@ -521,7 +531,7 @@ class ConceptGenerator:
             # 随机选择一个指导文本
             instruction = random.choice(self.instruction_texts)
             
-            # 构建示例
+            # 构建示例部分
             examples = []
             for i, desc in enumerate(self.backup_descriptions[:5]):
                 examples.append(f"{i+1}. \"{desc}\"")
@@ -543,15 +553,47 @@ class ConceptGenerator:
             concept_id = f"concept_{i}"
             concept_set[concept_id] = []
             
+            # 尝试生成候选描述
             candidates = []
-            
             generation_success = False
             
+            # LLaVA模型专门处理分支
             if self.model_type == "llava":
+                print(f"  使用LLaVA模型为概念 {concept_id} 生成描述...")
                 # 使用LLaVA模式特定的生成方法，传递states参数
                 candidates = self.generate_text_with_llava(prompt, self.args.num_candidates, states)
-                generation_success = len(candidates) > 0
+                
+                # 检查是否生成了有效描述
+                valid_candidates = []
+                for desc in candidates:
+                    # 对于LLaVA模型，直接添加描述，跳过清理步骤
+                    if desc and len(desc.strip()) > 5:  # 只做最基本的检查，确保描述不为空且有一定长度
+                        valid_candidates.append(desc.strip())
+                        print(f"  添加LLaVA原始描述 (长度: {len(desc.strip())}字符)")
+                    else:
+                        print(f"  跳过空描述或过短描述")
+                
+                # 添加有效的描述到概念中
+                if valid_candidates:
+                    print(f"  LLaVA生成了 {len(valid_candidates)} 个有效描述")
+                    for j in range(min(n_variations, len(valid_candidates))):
+                        concept_set[concept_id].append(valid_candidates[j])
+                        print(f"  添加LLaVA变体 {j+1}: {valid_candidates[j][:50]}...")
+                    
+                    # 如果描述不足，但有候选，重复使用已有描述
+                    if len(valid_candidates) < n_variations:
+                        needed = n_variations - len(valid_candidates)
+                        for j in range(needed):
+                            idx = j % len(valid_candidates)
+                            concept_set[concept_id].append(valid_candidates[idx])
+                            print(f"  重复使用LLaVA变体: {valid_candidates[idx]}")
+                    
+                    generation_success = True
+                else:
+                    print(f"  LLaVA没有生成有效描述")
+                    generation_success = False
             else:
+                # 使用标准语言模型生成
                 try:
                     input_ids = self.tokenizer.encode(prompt, return_tensors='pt').to(self.device)
                     attention_mask = torch.ones(input_ids.shape, device=self.device)
@@ -575,22 +617,26 @@ class ConceptGenerator:
                         if "Description:" in generated_text:
                             description = generated_text.split("Description:")[-1].strip()
                         else:
+                            found = False
                             for sep in ['\n', '. ', '! ', '? ']:
                                 if sep in generated_text:
                                     parts = generated_text.split(sep)
                                     description = parts[-1].strip()
+                                    found = True
                                     break
-                            else:
+                            
+                            if not found:
                                 description = generated_text[len(prompt):].strip()
                         
-                        description = clean_description(
-                            description, 
-                            robot_keywords=self.robot_keywords,
-                            posture_keywords=self.posture_keywords,
-                            keywords_filter=self.args.keywords_filter,
-                            strict_format=True,
-                            word_limit=(10, 30)
-                        )
+                        if self.args.use_clean_description:
+                            description = clean_description(
+                                description, 
+                                robot_keywords=self.robot_keywords,
+                                posture_keywords=self.posture_keywords,
+                                keywords_filter=self.args.keywords_filter,
+                                strict_format=True,
+                                word_limit=(10, 30)
+                            )
                         
                         if description:
                             if not any(self._similarity_too_high(description, [c]) for c in candidates):
@@ -601,25 +647,32 @@ class ConceptGenerator:
                     print(f"  生成出错: {e}")
                     generation_success = False
             
-            # 根据生成结果添加变体
-            if len(self.backup_descriptions) == 0:
-                concept_set[concept_id] = []
-                print(f" 无备用描述可用，概念 {concept_id} 将没有变体")
-            else:
-                if not generation_success or len(candidates) < n_variations:
-                    # 使用备用描述
-                    for j in range(min(n_variations, len(self.backup_descriptions))):
-                        backup = self.backup_descriptions[j]
-                        concept_set[concept_id].append(backup)
-                        print(f"  添加变体: {backup}")
+            # 如果不是LLaVA模型，或者LLaVA模型未生成有效描述，检查是否有备用描述
+            if not generation_success or (self.model_type != "llava" and len(candidates) < n_variations):
+                # 使用备用描述
+                if len(self.backup_descriptions) == 0:
+                    if not concept_set[concept_id]:  # 如果还没有添加任何变体
+                        concept_set[concept_id] = []
+                        print(f"  警告: 无备用描述可用，概念 {concept_id} 将没有变体")
                 else:
-                    # 使用生成的候选
-                    new_candidates = []
-                    for j in range(min(n_variations, len(candidates))):
-                        new_candidates.append(candidates[j])
-                        concept_set[concept_id].append(candidates[j])
-                        print(f"  添加变体: {candidates[j]}")
-                    candidates = new_candidates
+                    # 只有在概念变体不足时添加备用描述
+                    needed = n_variations - len(concept_set[concept_id])
+                    if needed > 0:
+                        backup_indices = list(range(len(self.backup_descriptions)))
+                        random.shuffle(backup_indices)
+                        
+                        for j in range(min(needed, len(self.backup_descriptions))):
+                            backup = self.backup_descriptions[backup_indices[j % len(self.backup_descriptions)]]
+                            concept_set[concept_id].append(backup)
+                            print(f"  添加备用变体: {backup}")
+            elif self.model_type != "llava":
+                # 对于非LLaVA模型，使用生成的候选
+                new_candidates = []
+                for j in range(min(n_variations, len(candidates))):
+                    new_candidates.append(candidates[j])
+                    concept_set[concept_id].append(candidates[j])
+                    print(f"  添加变体: {candidates[j]}")
+                candidates = new_candidates
         
         return concept_set
 
@@ -634,6 +687,11 @@ class ConceptGenerator:
                 flat_concepts.append(variant)
                 idx = int(concept_id.split('_')[1])
                 concept_indices.append(idx)
+        
+        # 检查是否有有效的概念变体
+        if not flat_concepts:
+            print("警告: 没有有效的概念变体可以评估")
+            return {}
 
         with torch.no_grad():
             text_inputs = torch.cat([clip.tokenize(desc)
@@ -773,10 +831,39 @@ class ConceptGenerator:
             candidates = []
             generation_success = False
             
+            # 根据模型类型选择不同的生成方法
             if self.model_type == "llava":
                 # 使用LLaVA模式特定的生成方法，传递states参数
-                batch_candidates = self.generate_text_with_llava(full_prompt, self.args.num_candidates, states)
-                generation_success = len(batch_candidates) > 0
+                batch_candidates_from_llava = self.generate_text_with_llava(full_prompt, self.args.num_candidates, states)
+                
+                valid_llava_batch = []
+                for desc in batch_candidates_from_llava:
+                    if desc and len(desc.strip()) > 5:  
+                        valid_llava_batch.append(desc.strip())
+                        print(f"  LLaVA原始描述 (长度: {len(desc.strip())}字符): {desc[:80]}...") 
+                
+                
+                batch_candidates = valid_llava_batch 
+                # generation_success = len(batch_candidates) > 0 
+                # candidates.extend(batch_candidates) 
+
+                if batch_candidates: # 如果LLaVA生成了有效描述
+                    print(f"  LLaVA为概念 {concept_id} 生成了 {len(batch_candidates)} 个有效描述，将直接添加到概念集。")
+                    added_llava_variants_count = 0
+                    for j_llava_idx in range(min(n_variations, len(batch_candidates))):
+                        desc_from_llava = batch_candidates[j_llava_idx]
+
+                        concept_set[concept_id].append(desc_from_llava)
+                        print(f"  为概念 {concept_id} 添加LLaVA变体 {j_llava_idx + 1}: {desc_from_llava[:50]}...")
+                        added_llava_variants_count += 1
+                    
+                    if added_llava_variants_count == 0 and len(batch_candidates) > 0 : # 理论上不应发生
+                        print(f"  [内部警告] LLaVA有候选但未添加任何变体到概念 {concept_id}。")
+                    elif added_llava_variants_count < n_variations:
+                        print(f"  LLaVA生成的有效描述 ({added_llava_variants_count}) 少于期望的变体数量 ({n_variations})。由于此路径不使用备用描述，概念 {concept_id} 将只有 {added_llava_variants_count} 个变体。")
+                else: # batch_candidates 为空
+                    print(f"  LLaVA没有为概念 {concept_id} 生成任何有效描述。概念 {concept_id} 将无变体（此路径不使用备用描述）。")
+
             else:
                 try:
                     input_ids = self.tokenizer.encode(full_prompt, return_tensors='pt').to(self.device)
@@ -809,14 +896,17 @@ class ConceptGenerator:
                             else:
                                 description = generated_text[len(full_prompt):].strip()
                         
-                        description = clean_description(
-                            description, 
-                            robot_keywords=self.robot_keywords,
-                            posture_keywords=self.posture_keywords,
-                            keywords_filter=self.args.keywords_filter,
-                            strict_format=True,
-                            word_limit=(10, 30)
-                        )
+                        if self.args.use_clean_description:
+                            description = clean_description(
+                                description, 
+                                robot_keywords=self.robot_keywords,
+                                posture_keywords=self.posture_keywords,
+                                keywords_filter=self.args.keywords_filter,
+                                strict_format=True,
+                                word_limit=(10, 30)
+                            )
+                        else:
+                            description = description
                         
                         if description:
                             if not any(self._similarity_too_high(description, [c]) for c in candidates):
@@ -923,7 +1013,17 @@ class ConceptGenerator:
                 generation_success = False
                 
                 if self.model_type == "llava":
+                    # 使用LLaVA的生成方法，传递states参数
                     batch_candidates = self.generate_text_with_llava(prompt, self.args.num_candidates, states)
+                    
+                    # 对于LLaVA生成的描述，直接添加而不进行清理
+                    valid_batch = []
+                    for desc in batch_candidates:
+                        if desc and len(desc.strip()) > 5:  
+                            valid_batch.append(desc.strip())
+                            print(f"  添加LLaVA原始描述 (长度: {len(desc.strip())}字符)")
+                    
+                    batch_candidates = valid_batch
                     generation_success = len(batch_candidates) > 0
                 else:
                     try:
@@ -962,14 +1062,16 @@ class ConceptGenerator:
                                 else:
                                     description = generated_text[len(prompt):].strip()
 
-                            description = clean_description(
-                                description, 
-                                robot_keywords=self.robot_keywords,
-                                posture_keywords=self.posture_keywords,
-                                keywords_filter=self.args.keywords_filter,
-                                strict_format=True,
-                                word_limit=(10, 30)
-                            )
+                            if self.args.use_clean_description:
+                                description = clean_description(
+                                    description, 
+                                    robot_keywords=self.robot_keywords,
+                                    posture_keywords=self.posture_keywords,
+                                    keywords_filter=self.args.keywords_filter,
+                                    strict_format=True,
+                                    word_limit=(10, 30)
+                                )
+
                             if description:
                                 if not any(self._similarity_too_high(description, [c]) for c in batch_candidates):
                                     batch_candidates.append(description)
@@ -979,6 +1081,7 @@ class ConceptGenerator:
                         print(f"  生成出错: {e}")
                         generation_success = False
 
+                # 根据生成结果添加候选
                 if not generation_success or len(batch_candidates) < variants_needed:
                         print(f"  没有合格的候选，评估备用描述")
                         backup_indices = list(range(len(backup_descriptions)))
@@ -1131,8 +1234,18 @@ class ConceptGenerator:
                 batch_candidates = []
                 generation_success = False
                 
+                
                 if self.model_type == "llava":
+                    # 使用LLaVA模式特定的生成方法，传递states参数
                     batch_candidates = self.generate_text_with_llava(prompt, self.args.num_candidates, states)
+                    
+                    valid_batch = []
+                    for desc in batch_candidates:
+                        if desc and len(desc.strip()) > 5:  
+                            valid_batch.append(desc.strip())
+                            print(f"  添加LLaVA原始描述 (长度: {len(desc.strip())}字符)")
+                    
+                    batch_candidates = valid_batch
                     generation_success = len(batch_candidates) > 0
                 else:
                     try:
@@ -1171,15 +1284,16 @@ class ConceptGenerator:
                                 else:
                                     description = generated_text[len(prompt):].strip()
 
-                            description = clean_description(
-                                description, 
-                                robot_keywords=self.robot_keywords,
-                                posture_keywords=self.posture_keywords,
-                                keywords_filter=self.args.keywords_filter,
-                                strict_format=True,
-                                word_limit=(10, 30)
-                            )
-                            
+                            if self.args.use_clean_description:
+                                description = clean_description(
+                                    description, 
+                                    robot_keywords=self.robot_keywords,
+                                    posture_keywords=self.posture_keywords,
+                                    keywords_filter=self.args.keywords_filter,
+                                    strict_format=True,
+                                    word_limit=(10, 30)
+                                )
+
                             if description:
                                 if not any(self._similarity_too_high(description, [c]) for c in batch_candidates):
                                     batch_candidates.append(description)
@@ -1189,6 +1303,7 @@ class ConceptGenerator:
                         print(f"  生成出错: {e}")
                         generation_success = False
 
+                
                 if not generation_success or len(batch_candidates) < variants_needed:
                     print(f"  没有合格的候选，评估备用描述")
                     backup_indices = list(range(len(backup_descriptions)))
@@ -1293,7 +1408,7 @@ def main():
     print("已加载全局CLIP模型")
     
     if make_env is None:
-        print("错误: 无法导入环境模块")
+        print("无法导入环境模块")
         return
     
     env = make_env(
@@ -1308,6 +1423,7 @@ def main():
     print(f"已创建环境: {args.domain_name}_{args.task_name}")
     
     model = None
+    
     rl_model_path = args.rl_model_path if hasattr(args, 'rl_model_path') else getattr(args, 'model_path', None)
     algorithm_name = args.algorithm_name
     
@@ -1384,7 +1500,6 @@ def main():
         
         print(f"  Episode {episode+1} 完成，总奖励: {total_reward:.2f}，收集了 {len(episode_states)} 个状态")
         
-        # 如果设置了采样数量且状态数量超过此值，进行采样
         if args.states_per_episode > 0 and len(episode_states) > args.states_per_episode:
             indices = np.linspace(0, len(episode_states) - 1, args.states_per_episode, dtype=int)
             episode_states = [episode_states[i] for i in indices]
@@ -1417,14 +1532,14 @@ def main():
         initial_concepts = concept_generator.generate_keyword_guided_concepts(
             n=args.n_concepts,
             n_variations=args.n_variants,
-            states=all_states  
+            states=all_states  # 传入状态数据供LLaVA模型使用
         )
     else:
         print("使用标准方法生成初始概念...")
         initial_concepts = concept_generator.generate_initial_concepts(
             n=args.n_concepts,
             n_variations=args.n_variants,
-            states=all_states  
+            states=all_states  # 传入状态数据供LLaVA模型使用
         )
     
     print("\n初始概念:")
@@ -1436,7 +1551,7 @@ def main():
             print(f"  变体 {j+1}: {variant}")
         else:
             print("  无有效变体")
-            concept_history[concept_id].append("无有效描述")  
+            concept_history[concept_id].append("无有效描述")  # 添加默认值
     
     print("\n评估概念适应度...")
     fitness_scores = concept_generator.evaluate_concept_fitness(
@@ -1463,7 +1578,7 @@ def main():
                 concepts=concepts,
                 fitness_scores=fitness_scores,
                 num_variants=args.n_variants,
-                states=all_states  
+                states=all_states  # 传入状态数据供LLaVA模型使用
             )
         else:
             print("使用标准方法演化概念...")
@@ -1471,7 +1586,7 @@ def main():
                 concepts=concepts,
                 fitness_scores=fitness_scores,
                 num_variants=args.n_variants,
-                states=all_states  
+                states=all_states  # 传入状态数据供LLaVA模型使用
             )
         
         fitness_scores = concept_generator.evaluate_concept_fitness(
@@ -1482,7 +1597,7 @@ def main():
         )
         
         for concept_id, variants in concepts.items():
-            if variants:  
+            if variants:  # 变体列表不为空
                 concept_history[concept_id].append(variants[0])
             else:
                 concept_history[concept_id].append("无有效描述")
@@ -1519,7 +1634,7 @@ if __name__ == "__main__":
 
 """
 
-# GPT-2 模型
+# GPT-2 
 CUDA_VISIBLE_DEVICES=6 python concept_generator.py \
     --domain_name walker \
     --task_name walk \
@@ -1546,7 +1661,7 @@ CUDA_VISIBLE_DEVICES=6 python concept_generator.py \
     --gpt2_repetition_penalty 1.2 \
     --model_name gpt2-medium
 
-GPT-2 模型
+GPT-2 
 CUDA_VISIBLE_DEVICES=6 python concept_generator.py \
     --domain_name walker \
     --task_name walk \
@@ -1556,7 +1671,7 @@ CUDA_VISIBLE_DEVICES=6 python concept_generator.py \
     --model_name gpt2-medium \
     --gpt2_max_length 200
 
-Llama-2 模型
+Llama-2 
 CUDA_VISIBLE_DEVICES=3 python concept_generator.py \
     --domain_name walker \
     --task_name walk \
@@ -1574,7 +1689,7 @@ CUDA_VISIBLE_DEVICES=3 python concept_generator.py \
     --min_keywords 2 \
     --max_keywords 4
 
-# 使用LLaVA模型
+# 使用LLaVA
 CUDA_VISIBLE_DEVICES=3 python concept_generator.py \
     --domain_name walker \
     --task_name walk \
@@ -1585,8 +1700,9 @@ CUDA_VISIBLE_DEVICES=3 python concept_generator.py \
     --gpt2_max_length 200 \
     --n_concepts 4 \
     --n_variants 2 \
-    --evolution_iterations 2
-    --states_per_episode 10
+    --evolution_iterations 1 \
+    --states_per_episode 5 \
+    --use_clean_description False
 
 GPT-4V (Vision)
 Claude 3 Opus/Sonnet
