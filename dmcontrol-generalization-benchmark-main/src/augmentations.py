@@ -20,8 +20,14 @@ def _load_places(batch_size=256, image_size=84, num_workers=16, use_val=False):
 		if os.path.exists(data_dir):
 			fp = os.path.join(data_dir, 'places365_standard', partition)
 			if not os.path.exists(fp):
-				print(f'Warning: path {fp} does not exist, falling back to {data_dir}')
-				fp = data_dir
+				# 检查上一级目录的places365_standard目录
+				parent_places = os.path.join(os.path.dirname(data_dir), 'places365_standard', partition)
+				if os.path.exists(parent_places):
+					print(f'Found places365_standard at {parent_places}')
+					fp = parent_places
+				else:
+					print(f'Warning: path {fp} does not exist, falling back to {data_dir}')
+					fp = data_dir
 			places_dataloader = torch.utils.data.DataLoader(
 				datasets.ImageFolder(fp, TF.Compose([
 					TF.RandomResizedCrop(image_size),
@@ -34,7 +40,7 @@ def _load_places(batch_size=256, image_size=84, num_workers=16, use_val=False):
 			break
 	if places_iter is None:
 		raise FileNotFoundError('failed to find places365 data at any of the specified paths')
-	print('Loaded dataset from', data_dir)
+	print('Loaded dataset from', fp)
 
 
 def _get_places_batch(batch_size):

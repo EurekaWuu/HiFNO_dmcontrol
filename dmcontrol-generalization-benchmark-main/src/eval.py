@@ -61,8 +61,21 @@ def main(args):
 	# Set working directory
 	work_dir = os.path.join(args.log_dir, args.domain_name+'_'+args.task_name, args.algorithm, str(args.seed))
 	print('Working directory:', work_dir)
-	assert os.path.exists(work_dir), 'specified working directory does not exist'
-	model_dir = utils.make_dir(os.path.join(work_dir, 'model'))
+	
+	# 如果指定了模型路径则使用指定的模型
+	if args.model_path and os.path.exists(args.model_path):
+		model_path = args.model_path
+		print(f"Using specified model: {model_path}")
+		
+		if not os.path.exists(work_dir):
+			os.makedirs(work_dir)
+			print(f"Created working directory: {work_dir}")
+	else:
+		# 原本的方式查找模型
+		assert os.path.exists(work_dir), 'specified working directory does not exist'
+		model_dir = utils.make_dir(os.path.join(work_dir, 'model'))
+		model_path = os.path.join(model_dir, str(args.train_steps)+'.pt')
+	
 	video_dir = utils.make_dir(os.path.join(work_dir, 'video'))
 	video = VideoRecorder(video_dir if args.save_video else None, height=448, width=448)
 
@@ -83,7 +96,10 @@ def main(args):
 		action_shape=env.action_space.shape,
 		args=args
 	)
-	agent = torch.load(os.path.join(model_dir, str(args.train_steps)+'.pt'))
+	
+	# 加载模型
+	print(f"Loading model from: {model_path}")
+	agent = torch.load(model_path)
 	agent.train(False)
 
 	print(f'\nEvaluating {work_dir} for {args.eval_episodes} episodes (mode: {args.eval_mode})')

@@ -127,6 +127,8 @@ def parse_args():
 	parser.add_argument('--use_clip_bisim_loss', type=utils.str2bool, default=True,
 						help='是否使用CLIP引导的双模拟损失')
 
+	parser.add_argument('--model_path', default=None, type=str, help='直接指定模型文件路径，不通过目录结构查找')
+
 	args = parser.parse_args()
 
 	assert args.algorithm in {
