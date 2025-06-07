@@ -7,12 +7,34 @@ trap 'echo "脚本被中断，退出..."; exit 1' INT
 export DMCGB_DATASETS="/mnt/lustre/GPU4/home/wuhanpeng/dmcontrol/src/env/data"
 
 
+
+clean_gpu_memory() {
+
+    python -c "
+import torch
+import gc
+gc.collect()
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+    print('已清理GPU内存缓存')
+"
+}
+
+
 eval_modes=("color_hard" "video_easy" "video_hard")
 
 
 log_base_dir="/mnt/lustre/GPU4/home/wuhanpeng/dmcontrol/logs/test"
 
 mkdir -p "$log_base_dir"
+
+# 初始化失败计数
+failed_count=0
+# 创建失败模型列表文件
+timestamp=$(date +%Y%m%d_%H%M%S)
+failed_models_summary="${log_base_dir}/failed_models_summary_${timestamp}.txt"
+echo "评估失败模型汇总 - $(date)" > "$failed_models_summary"
+echo "----------------------------------------" >> "$failed_models_summary"
 
 
 algorithm="svea"
@@ -71,6 +93,13 @@ echo "数据集目录: $DMCGB_DATASETS"
 
 
 for model_path in "${model_paths[@]}"; do
+    # 提取模型所在的目录
+    model_dir=$(dirname "$model_path")
+    model_id=$(basename "$model_path" .pt)
+    
+    # 初始化当前模型的失败标志
+    model_failed=false
+    
     for domain in "${!task_mapping[@]}"; do
         for task in ${task_mapping[$domain]}; do
             if [[ "$model_path" == *"${domain}_${task}"* ]]; then
@@ -96,10 +125,16 @@ for model_path in "${model_paths[@]}"; do
                 task_name="${BASH_REMATCH[2]}"
             else
                 echo "无法解析 $domain_task_name"
+                # 记录到汇总文件
+                echo "[$(date +%Y-%m-%d_%H:%M:%S)] 无法解析 $domain_task_name" >> "$failed_models_summary"
+                ((failed_count++))
                 continue
             fi
         else
             echo "无法从 $model_path 提取domain和task"
+            # 记录到汇总文件
+            echo "[$(date +%Y-%m-%d_%H:%M:%S)] 无法从 $model_path 提取domain和task" >> "$failed_models_summary"
+            ((failed_count++))
             continue
         fi
     fi
@@ -107,6 +142,9 @@ for model_path in "${model_paths[@]}"; do
     
     task_log_dir="${log_base_dir}/${algorithm}/${domain_name}_${task_name}"
     mkdir -p "$task_log_dir"
+    
+    # 为当前模型创建失败日志文件
+    failed_evals_log="${model_dir}/failed_evaluations.txt"
     
     
     echo "----------------------------------------"
@@ -131,14 +169,46 @@ for model_path in "${model_paths[@]}"; do
         
         if [ $? -ne 0 ]; then
             echo "评估失败 - ${domain_name}_${task_name}, eval_mode: ${eval_mode}"
+            
+            # 如果这是第一次失败，初始化失败日志文件
+            if [ "$model_failed" = false ]; then
+                echo "评估失败记录 - 模型: $(basename "$model_path") - $(date)" > "$failed_evals_log"
+                echo "----------------------------------------" >> "$failed_evals_log"
+                model_failed=true
+            fi
+            
+            # 记录评估失败到模型目录下的失败日志
+            echo "[$(date +%Y-%m-%d_%H:%M:%S)] 评估失败 - domain: ${domain_name}, task: ${task_name}, eval_mode: ${eval_mode}" >> "$failed_evals_log"
+            
+            # 同时记录到汇总文件
+            echo "[$(date +%Y-%m-%d_%H:%M:%S)] 评估失败 - 模型: ${model_path}" >> "$failed_models_summary"
+            echo "    domain: ${domain_name}, task: ${task_name}, eval_mode: ${eval_mode}" >> "$failed_models_summary"
+            echo "----------------------------------------" >> "$failed_models_summary"
+            
+            ((failed_count++))
             continue
         fi
         
         echo "完成: ${domain_name}_${task_name}, eval_mode: ${eval_mode}"
     done
     
+    # 如果没有失败记录但文件已创建，添加成功信息
+    if [ "$model_failed" = true ]; then
+        echo "评估日志已保存到: $failed_evals_log"
+    fi
     
     unset domain_name task_name
+    
+    echo "模型评估完成，清理GPU内存..."
+    clean_gpu_memory
 done
 
 echo "所有评估完成 $(date)"
+echo "共有 $failed_count 次评估失败"
+
+# 如果没有失败的评估，添加说明
+if [ $failed_count -eq 0 ]; then
+    echo "所有评估成功完成！" >> "$failed_models_summary"
+else
+    echo "失败模型汇总已保存到: $failed_models_summary"
+fi
