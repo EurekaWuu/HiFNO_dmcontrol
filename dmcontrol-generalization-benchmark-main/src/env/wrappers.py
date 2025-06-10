@@ -319,3 +319,19 @@ class VideoWrapper(gym.Wrapper):
 		if channels_last:
 			obs = torch.from_numpy(obs).permute(1,2,0).numpy()
 		return obs
+
+	def reload_physics(self, physics_string, camera_string=None):
+		state = self._get_physics().get_state()
+		self._env.physics.reload_from_xml_string(physics_string)
+		if camera_string:
+			self._env.physics.camera._render_camera.scene.from_xml_string(camera_string)
+		try:
+			self._set_state(state)
+		except ValueError as e:
+			print(f'WARNING: Could not set physics state: {e}')
+			print('WARNING: This is likely due to a mismatch between an old model and a new environment version.')
+			print('WARNING: Proceeding with default state.')
+
+	@property
+	def physics(self):
+		return self._get_physics()
