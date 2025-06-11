@@ -110,12 +110,26 @@ class ColorWrapper(gym.Wrapper):
 			setting_kwargs = {}
 		if state is None:
 			state = self._get_state()
+		
+		# 重新加载物理模型
 		self._reload_physics(
 			*common.settings.get_model_and_assets_from_setting_kwargs(
 				domain_name+'.xml', setting_kwargs
 			)
 		)
-		self._set_state(state)
+		
+		# 应用状态，如果维度不匹配则使用默认状态
+		try:
+			self._set_state(state)
+		except ValueError as e:
+			print(f'无法设置物理状态: {e}')
+			print('使用默认状态。')
+			try:
+				# 获取并使用新环境默认状态
+				new_state = self._get_state()
+				print(f'使用默认状态。原状态维度 {state.shape}，新状态维度 {new_state.shape}')
+			except Exception as e2:
+				print(f'无法获取默认状态: {e2}')
 	
 	def get_state(self):
 		return self._get_state()
@@ -329,8 +343,14 @@ class VideoWrapper(gym.Wrapper):
 			self._set_state(state)
 		except ValueError as e:
 			print(f'WARNING: Could not set physics state: {e}')
-			print('WARNING: This is likely due to a mismatch between an old model and a new environment version.')
-			print('WARNING: Proceeding with default state.')
+			print('物理状态维度不匹配，使用默认状态。')
+			try:
+				# 使用新创建状态的默认初始值
+				default_state = self._get_physics().get_state()
+				self._set_state(default_state)
+				print(f'使用默认状态。原状态维度 {state.shape}，新状态维度 {default_state.shape}')
+			except Exception as e2:
+				print(f'无法设置默认状态: {e2}')
 
 	@property
 	def physics(self):
