@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>杏林千问 - 智能中医药健康助手</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container-fluid">
+        <header class="py-3 text-center">
+            <h1 class="title">杏林千问</h1>
+            <p class="subtitle">融合现代医疗与中医药智慧的智能健康助手</p>
+        </header>
+
+        <div class="row main-content">
+            <!-- 左侧功能区 -->
+            <div class="col-md-3 feature-panel">
+                <div class="card mb-3">
+                    <div class="card-header bg-primary text-white">
+                        <h5>功能导航</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="feature-btn" data-feature="general">
+                            <i class="icon-health"></i> 健康咨询
+                        </div>
+                        <div class="feature-btn" data-feature="tcm">
+                            <i class="icon-tcm"></i> 中医药问答
+                        </div>
+                        <div class="feature-btn" data-feature="weight">
+                            <i class="icon-weight"></i> 体重管理
+                        </div>
+                        <div class="feature-btn" data-feature="chronic">
+                            <i class="icon-chronic"></i> 慢病管理
+                        </div>
+                        <div class="feature-btn" data-feature="guide">
+                            <i class="icon-guide"></i> 智能导诊
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header bg-info text-white">
+                        <h5>系统介绍</h5>
+                    </div>
+                    <div class="card-body small-text">
+                        <p>"杏林千问"是融合现代医疗知识与中医药智慧的高智能中文医疗对话系统，依托生成式大模型能力，结合海量医疗数据与中医药知识库，实现精准问诊、健康咨询与导诊推荐。</p>
+                        <p>特色功能包括中医体质辨识、体重管理指导、慢病健康管理等，致力于构建"懂医疗、会沟通、有温度"的智能健康助手。</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 中间聊天区域 -->
+            <div class="col-md-6 chat-panel">
+                <div class="card chat-container">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h3>对话窗口</h3>
+                        <button class="btn btn-sm btn-outline-secondary" id="clearChat">清空对话</button>
+                    </div>
+                    <div class="card-body chat-history" id="chatHistory">
+                        <div class="message system-message">
+                            <div class="message-content">
+                                您好！我是"杏林千问"智能健康助手。请问有什么健康问题需要咨询吗？我可以回答健康咨询、中医药知识、体重管理等问题。
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card-footer">
+                        <div class="input-group">
+                            <button class="btn btn-outline-secondary" type="button" id="uploadImageBtn">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-image" viewBox="0 0 16 16">
+                                    <path d="M6.002 5.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0z"/>
+                                    <path d="M2.002 1a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2h-12zm12 1a1 1 0 0 1 1 1v6.5l-3.777-1.947a.5.5 0 0 0-.577.093l-3.71 3.71-2.66-1.772a.5.5 0 0 0-.63.062L1.002 12V3a1 1 0 0 1 1-1h12z"/>
+                                </svg>
+                            </button>
+                            <input type="text" class="form-control" id="userInput" placeholder="请输入您的问题...">
+                            <button class="btn btn-primary" type="button" id="sendBtn">发送</button>
+                        </div>
+                        <div id="imagePreview" class="mt-2 d-none">
+                            <div class="position-relative d-inline-block">
+                                <img src="" alt="上传图片预览" class="img-thumbnail" style="max-height: 100px;">
+                                <button type="button" class="btn-close position-absolute top-0 end-0" id="removeImage" aria-label="移除图片"></button>
+                            </div>
+                        </div>
+                        <input type="file" id="imageUpload" accept="image/*" class="d-none">
+                    </div>
+                </div>
+            </div>
+
+            <!-- 右侧信息展示区 -->
+            <div class="col-md-3 info-panel">
+                <div class="card mb-3">
+                    <div class="card-header bg-success text-white">
+                        <h5>健康小知识</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="health-tip">
+                            <h6>中医养生建议</h6>
+                            <p>春季养肝，夏季养心，秋季养肺，冬季养肾，脾胃四季养。</p>
+                        </div>
+                        <div class="health-tip">
+                            <h6>体重管理小贴士</h6>
+                            <p>控制饮食、规律运动、充足睡眠、心理平衡，是体重管理的四大支柱。</p>
+                        </div>
+                        <div class="health-tip">
+                            <h6>慢病预防</h6>
+                            <p>定期体检、合理饮食、适量运动、戒烟限酒，是预防慢性病的重要措施。</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header bg-warning text-dark">
+                        <h5>体质辨识</h5>
+                    </div>
+                    <div class="card-body">
+                        <p>中医体质辨识是中医体质学说的重要组成部分，通过望、闻、问、切等方法，辨别人体体质类型。</p>
+                        <button class="btn btn-outline-warning w-100 mt-2" id="constitutionTest">开始体质测试</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="footer mt-4 py-3 bg-light">
+        <div class="container text-center">
+            <span class="text-muted">© 2024 杏林千问 - 智能中医药健康助手</span>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="script.js"></script>
+</body>
+</html> 

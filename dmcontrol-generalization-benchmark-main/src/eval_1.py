@@ -109,28 +109,16 @@ def main(args):
 	cropped_obs_shape = (3*args.frame_stack, args.image_crop_size, args.image_crop_size)
 	print('Observations:', env.observation_space.shape)
 	print('Cropped observations:', cropped_obs_shape)
+	agent = make_agent(
+		obs_shape=cropped_obs_shape,
+		action_shape=env.action_space.shape,
+		args=args
+	)
 	
 	# 加载模型
 	print(f"Loading model from: {model_path}")
-	try:
-		# Memory-efficient loading
-		agent = torch.load(model_path, map_location='cpu')
-		agent.train(False)
-		# Move only essential parts to GPU for evaluation
-		if hasattr(agent, 'shared_cnn'):
-			agent.shared_cnn.cuda()
-		if hasattr(agent, 'actor'):
-			agent.actor.cuda()
-	except Exception as e:
-		print(f"Error during memory-efficient loading: {e}. Falling back to legacy method.")
-		# Fallback to legacy agent loading
-		agent = make_agent(
-			obs_shape=cropped_obs_shape,
-			action_shape=env.action_space.shape,
-			args=args
-		)
-		agent = torch.load(model_path)
-		agent.train(False)
+	agent = torch.load(model_path)
+	agent.train(False)
 
 	step = args.train_steps
 	try:

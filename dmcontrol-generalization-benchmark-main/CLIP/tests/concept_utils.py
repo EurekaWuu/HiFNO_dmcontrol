@@ -535,6 +535,7 @@ def visualize_evolution(evolution_history, fitness_history, save_path=None):
 def parse_args():
     parser = argparse.ArgumentParser(description='概念自适应与演化测试工具')
     
+    # 添加自定义布尔转换函数
     def str2bool(v):
         if isinstance(v, bool):
             return v
@@ -1098,12 +1099,19 @@ def process_image_with_llava_subprocess(image, prompt=None, model_path=None, lla
         return f"[ERROR] LLaVA处理图像出错: {e}"
 
 def process_states_with_llava(states, model_path=None, llava_env_path=None, max_samples=3, prompt=None, host='localhost', port=7788):
+    """
+    使用 socket 客户端调用 LLaVA socket 服务端，批量处理 states，返回描述列表。
+    states: list of numpy.ndarray or PIL.Image
+    prompt: str
+    host, port: socket 服务端地址
+    """
     if not states:
         print("警告: 没有提供状态数据")
         return ["[ERROR] 没有提供状态数据"]
     # if not prompt:
     # prompt = "Question: Describe the robot's posture in this image.\nAnswer:"  
-    prompt = "Describe the state of the robot's limbs and joints as it moves in this figure"  
+    # prompt = "Describe the state of the robot's limbs and joints as it moves in this figure"  
+    prompt = "Describe in a complete sentence the state of the robot's limbs and joints as it moves in this figure."
 
     captions = []
     for i, state in enumerate(states):
@@ -1140,17 +1148,17 @@ def process_states_with_llava(states, model_path=None, llava_env_path=None, max_
                 s.sendall(json.dumps(payload).encode())
                 s.shutdown(socket.SHUT_WR)
                 
-                
+                # 增加接收缓冲区大小，确保完整接收数据
                 chunks = []
                 bytes_received = 0
                 while True:
                     try:
-                        chunk = s.recv(8192)  
+                        chunk = s.recv(8192)  # 增加单次接收缓冲区大小
                         if not chunk:
                             break
                         bytes_received += len(chunk)
                         chunks.append(chunk)
-                        if bytes_received > 1024*1024: 
+                        if bytes_received > 1024*1024:  # 设置1MB的接收上限，防止无限接收
                             break
                     except socket.timeout:
                         print("[LLaVA-Socket] 接收超时，可能已接收到全部数据")
@@ -1162,12 +1170,14 @@ def process_states_with_llava(states, model_path=None, llava_env_path=None, max_
                 try:
                     resp_json = json.loads(resp_str)
                     desc = resp_json.get('description', '')
+                    # 确保描述不为空
                     if not desc.strip():
                         desc = "[ERROR] 服务器返回空描述"
                 except Exception as e:
                     print(f"[LLaVA-Socket] 响应解析失败: {e}, 原始: {resp_str[:200]}...")
                     desc = f"[ERROR] 响应解析失败: {e}"
                 captions.append(desc)
+                # 打印完整的描述，不截断
                 print(f"[LLaVA-Socket] 获取描述 ({len(desc)}字符): {desc}")
         except Exception as e:
             print(f"[LLaVA-Socket] socket 通信异常: {e}")
